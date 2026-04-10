@@ -39,6 +39,9 @@ usage-data/
 docs/_site/
 site/
 
+# Session handoffs — personal state, not public
+HANDOFF.md
+
 # Wiki starter runtime state (users should fork the starter separately)
 examples/research-wiki-starter/wiki/sources/
 examples/research-wiki-starter/wiki/concepts/
