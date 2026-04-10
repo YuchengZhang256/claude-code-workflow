@@ -1,0 +1,147 @@
+# Global Instructions
+
+> This is a **template**. Copy to `~/.claude/CLAUDE.md`, delete this quote block,
+> and fill in the `<...>` placeholders. Everything below the "Technical Rules"
+> divider is generic and can be kept verbatim.
+
+---
+
+## User Context
+
+Replace this section with a few sentences about yourself. Claude reads this on
+every turn and uses it to tailor explanations. Examples:
+
+```
+User is a <role — e.g. backend engineer / PhD student / researcher>.
+Working on <domains — e.g. distributed systems / causal inference>.
+Prefers <language — e.g. English responses, or Chinese responses>.
+```
+
+Keep it short (≤3 sentences). Claude will add more via the `memory/` system over
+time.
+
+## General
+
+> Delete this line if you do not want a language preference.
+Always respond in `<YOUR_LANGUAGE>` unless the context clearly requires another
+language (e.g. writing English papers, code comments in English).
+
+## Explanation Style
+
+> Optional. Keep if you want consistent pedagogical framing.
+When explaining technical concepts, start with a concrete example and intuitive
+explanation before the abstract formulation.
+
+## Math Formatting
+
+**Always use LaTeX for mathematical expressions** — in all output, including
+conversation responses and file content. Use `$...$` for inline math and
+`$$...$$` for display math. Never write math as plain text (e.g. write
+`$E[Y(1) - Y(0)]$` not `E[Y(1) - Y(0)]`).
+
+---
+
+# Technical Rules
+# ---------------
+# The sections below are generic and safe to keep verbatim. They are the
+# "hard rules" that make the workflow skills actually change Claude's behavior.
+
+## Session Continuity (Handoff)
+
+**At the start of every conversation, check if `HANDOFF.md` exists in the
+working directory.**
+
+If it exists, read it immediately before doing anything else. It is a briefing
+left by the previous agent and contains the project goal, current state,
+completed work, next steps, and key decisions. Treat it as authoritative
+context for this session.
+
+Do not mention reading the file unless the user asks — just absorb it and
+proceed as if you have full context.
+
+Pair this with the `handoff` skill: at the end of a significant session, run
+`/handoff` (or say "save handoff") to compress the session into `HANDOFF.md`
+for the next agent.
+
+## Web Fetching — WebFetch Failure Escalation
+
+**When the built-in `WebFetch` tool fails or returns degraded content,
+immediately escalate to the `web-access` skill. Do not give up or tell the
+user "can't access this site" without trying the escalation first.**
+
+Failure signals that MUST trigger escalation:
+
+- HTTP 403 / 429 / 503 status
+- Empty response body
+- A CAPTCHA page or challenge screen ("Just a moment...", "Checking your
+  browser", Cloudflare Ray ID, "Attention Required")
+- A "please enable JavaScript" stub
+- Obviously truncated content (far shorter than the page should be)
+- Unrendered SPA HTML (React / Vue / Next.js app shells with no real content)
+
+On detecting any of the above, invoke the `web-access` skill's entry point:
+
+```bash
+bash ~/.claude/skills/web-access/scripts/fetch.sh "<URL>"
+```
+
+Exit code handling:
+- `0` — success, stdout is the cleaned content
+- `2` — URL is a PDF, defer to a dedicated PDF extraction tool
+- `3` — all fallback layers failed, then escalate to the Chrome DevTools MCP
+  tools as described in `~/.claude/skills/web-access/SKILL.md`
+
+This rule overrides any tendency to "give up gracefully" — the user wants
+the content retrieved, not an apology. Only stop escalating after Layer 4
+(Chrome DevTools MCP) has also failed.
+
+## PDF and Image Reading
+
+**For PDF and image content extraction, use a dedicated extraction tool before
+processing the content.** The built-in `Read` tool can handle small PDFs
+inline, but large scientific PDFs, scanned documents, and images are better
+handled by a purpose-built extractor.
+
+Recommended options (pick whichever is installed):
+
+- `pdftotext` (from `poppler-utils`) — fast, text-only, no layout
+- `pdfplumber` (Python) — tables and layout preserved
+- An LLM-based extractor with a long context window — best for scanned or
+  complex PDFs; feed the file and prompt for verbatim extraction
+
+After extraction, use the extracted text as context and perform the user's
+actual request yourself. Only fall back to `Read` on a PDF if the dedicated
+tool is unavailable.
+
+## Multi-Model Review Protocol
+
+When the user asks for rigorous review (proofs, code, architecture) using
+multiple models:
+
+### Model Roles
+- **Primary (self)**: Precise verifier. Good at algebraic/probabilistic
+  verification, systematic coverage, low false-positive rate. Use as first-pass
+  verifier and final arbitrator.
+- **Adversarial reviewer** (a second model invoked via CLI / skill): Adversarial
+  stress-tester. Excels at finding structural logic flaws, dependency chain
+  breaks, and implicit assumptions. Typically has a higher false-positive rate
+  — always cross-check findings.
+- **Second-opinion models**: Brainstorming, long-document analysis.
+
+### Recommended Pipeline
+1. **Primary agents** verify the work (parallel, different focus areas)
+2. **Adversarial reviewer** stress-tests the verified work
+3. **Primary** arbitrates any adversarial findings (distinguish real bugs from
+   false positives)
+4. Fix real issues, then repeat from step 2 if needed
+
+### Critical Rule for External Models
+**External model CLIs cannot read files from the filesystem of the current
+session.** They only see content you explicitly attach. Therefore:
+
+- Attach current git changes via `--diff` or equivalent (always fresh)
+- Attach files by pattern via `--files '<glob>'` or equivalent
+- Use `-f <file>` for specific individual files
+- Never rely on the external model to "just read" a file path — always attach
+
+See `~/.claude/skills/multi-model-review/SKILL.md` for concrete protocols.

@@ -1,0 +1,22 @@
+---
+name: User profile
+description: Basic facts about the user — role, domains, preferences, collaboration style
+type: user
+---
+
+# User Profile (template — fill in and rename to `user_profile.md`)
+
+**Role**: `<e.g. backend engineer / PhD student / data scientist>`
+
+**Primary domains**: `<e.g. distributed systems, Rust, PostgreSQL>`
+
+**Languages preferred**: `<e.g. English for code, Chinese for discussion>`
+
+**Collaboration style**:
+- Likes `<e.g. concrete examples before abstractions>`
+- Dislikes `<e.g. over-hedging, long summaries of completed work>`
+- Responds well to `<e.g. terse checklists, code-first explanations>`
+
+**Known expertise**: `<what the user is already fluent in — don't re-explain these>`
+
+**Learning**: `<areas the user is new to — explain more carefully>`

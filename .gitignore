@@ -1,0 +1,49 @@
+# Local overrides
+*.local
+.env
+.env.*
+settings.local.json
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Claude Code runtime artifacts (if someone clones into ~/.claude/)
+history.jsonl
+stats-cache.json
+backups/
+file-history/
+paste-cache/
+session-env/
+sessions/
+shell-snapshots/
+tasks/
+telemetry/
+transcripts/
+usage-data/
+
+# Rendered docs
+docs/_site/
+site/
+
+# Wiki starter runtime state (users should fork the starter separately)
+examples/research-wiki-starter/wiki/sources/
+examples/research-wiki-starter/wiki/concepts/
+examples/research-wiki-starter/wiki/entities/
+examples/research-wiki-starter/wiki/comparisons/
+examples/research-wiki-starter/wiki/synthesis/
+examples/research-wiki-starter/raw/*
+!examples/research-wiki-starter/raw/.gitkeep

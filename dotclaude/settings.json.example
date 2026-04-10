@@ -1,0 +1,23 @@
+{
+  "_comment": "Example ~/.claude/settings.json. Copy to ~/.claude/settings.json and edit. Do NOT put API keys here — use settings.local.json (gitignored) for secrets.",
+
+  "hooks": {
+    "_comment": "Example: auto-compile .tex files with pdflatex on Edit/Write. Remove if you don't use LaTeX.",
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$CLAUDE_FILE_PATHS\" | grep -q '\\.tex$'; then cd \"$(dirname \"$(echo \"$CLAUDE_FILE_PATHS\" | grep '\\.tex$' | head -1)\")\" && pdflatex -interaction=nonstopmode \"$(basename \"$(echo \"$CLAUDE_FILE_PATHS\" | grep '\\.tex$' | head -1)\")\" 2>&1 | tail -5; fi"
+          }
+        ]
+      }
+    ]
+  },
+
+  "_permission_comment": "permissionMode controls how aggressively Claude Code prompts for dangerous actions. 'default' prompts every time. 'bypassPermissions' runs anything without prompting — only enable if you understand the risk. 'acceptEdits' auto-accepts file edits but still prompts for shell commands.",
+  "permissionMode": "default",
+
+  "effortLevel": "high"
+}

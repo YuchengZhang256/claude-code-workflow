@@ -1,0 +1,14 @@
+{
+  "_comment": "Example ~/.claude/settings.local.json. This file is for PERSONAL secrets and should be gitignored. Never commit this file. Copy to ~/.claude/settings.local.json.",
+
+  "_env_comment": "Prefer exporting secrets via your shell rc (export OPENAI_API_KEY=...) over hardcoding here. If you must put keys in this file, keep it mode 600.",
+
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}

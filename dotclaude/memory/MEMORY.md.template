@@ -1,0 +1,23 @@
+# Memory Index
+
+<!--
+  This is the index file for your auto-memory system. Claude reads it every
+  turn. Keep each line ≤150 chars — lines after ~200 are truncated.
+
+  Each entry points to one memory file in this directory. Memory files carry
+  YAML frontmatter with `name`, `description`, `type` fields (see the
+  example files: user_profile.md, feedback_example.md, project_example.md).
+
+  Memory types:
+    - user       — who you are, how you work, what you know
+    - feedback   — corrections and confirmations from past sessions
+    - project    — facts about ongoing work not derivable from code
+    - reference  — pointers to external systems (dashboards, issue trackers)
+
+  Delete the examples below once you have real memories.
+-->
+
+- [User profile](user_profile.md) — who the user is and how they prefer to collaborate
+- [Feedback example](feedback_example.md) — example of a "feedback" memory (rule + why + how-to-apply)
+- [Project example](project_example.md) — example of a "project" memory (current initiative + stakes)
+- [Reference example](reference_example.md) — example of a "reference" memory (pointer to an external system)
