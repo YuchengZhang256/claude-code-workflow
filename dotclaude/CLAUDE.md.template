@@ -113,6 +113,76 @@ After extraction, use the extracted text as context and perform the user's
 actual request yourself. Only fall back to `Read` on a PDF if the dedicated
 tool is unavailable.
 
+## Subagent discipline
+
+Parallel subagents (via the `Agent` / `Task` tool) cost real tokens. Spawn
+them deliberately — too many wastes context, too few misses fan-out
+opportunities.
+
+### When to spawn parallel subagents
+
+Good fits:
+
+- **Literature fanout** — N candidate papers to read / score independently
+  → N parallel subagents, one per paper.
+- **Per-theorem proof audit** — each lemma / theorem is independent → audit
+  in parallel.
+- **Multi-persona review** — `pedantic / adversarial / generous` reviewers
+  running in parallel on the same artifact (see `proof-audit`,
+  `lit-collision`).
+- **Independent file-path searches** — several disjoint codebases or
+  directories searched concurrently.
+- **Multi-model cross-validation** — delegate to the `multi-model-review`
+  skill rather than hand-rolling `Agent` calls.
+
+Exception: pure bulk URL fetching uses the `web-access` parallel wrapper
+(`scripts/fetch-parallel.sh`) — it is cheaper than spawning agents.
+
+### When NOT to spawn (anti-patterns)
+
+- **Sequential dependency** — later subagent needs the earlier one's output
+  → run sequentially.
+- **A single Grep / Glob / Read would suffice** → do not wrap in `Agent`.
+- **The main thread is already doing the same work** → do not duplicate.
+- **Brief is longer than the expected output** → overhead > value.
+- **The whole task fits in the main context** → no need to outsource.
+
+### Briefing standard
+
+Subagents see none of the parent session. The brief must be self-contained:
+
+- **Self-contained** — all necessary context, file paths, and goals in the
+  brief itself.
+- **Explain the WHY, not just the WHAT** — state intent so the agent can
+  make judgment calls, not just follow a script.
+- **Specify the output format** — word limit, structure, schema.
+- **Concrete anchors** — absolute paths, line numbers, specific source
+  URLs / DOIs.
+- **End with "report under N words"** — cap the response.
+
+Narrow step-by-step briefs ("do step 1, step 2, step 3") turn a smart
+agent into a dumb one. Give it goals and constraints; let it reason.
+
+### Role definition (for parallel same-type subagents)
+
+Each parallel subagent must:
+
+- **Have a named lens** — use `pedantic / adversarial / generous`, not
+  `reviewer A / reviewer B`.
+- **Emit the same schema** — so the main thread can merge programmatically
+  (matching JSON fields or Markdown sections).
+- **Receive a lens-specific brief** — what this role covers and ignores,
+  to prevent overlap.
+
+### Anti-pattern checklist
+
+- Over-spawning for trivial tasks (one `Read` would have sufficed).
+- Parallel subagents editing the same files → merge conflicts.
+- Fuzzy role boundaries → redundant findings, wasted tokens.
+- Main thread duplicating subagent work.
+- Treating `Agent` as free — every call burns real tokens. Always ask
+  first: *can a single `Grep` / `Read` solve this?*
+
 ## Multi-Model Review Protocol
 
 When the user asks for rigorous review (proofs, code, architecture) using

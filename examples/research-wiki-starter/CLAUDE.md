@@ -17,7 +17,7 @@ inside this directory and uses it as the schema for all wiki operations.
     log.md           # append-only operation log
     sources/         # one page per paper / document
     concepts/        # one page per concept
-    entities/        # people, algorithms, datasets
+    entities/        # people, algorithms, datasets, proof techniques, inequalities
     comparisons/     # head-to-head analyses
     synthesis/       # cross-source big-picture pages
 ```
@@ -49,7 +49,16 @@ Triggered by "ingest raw/<file>" or "add this paper".
    pages explicitly.
 7. Add bidirectional `[[wikilinks]]` everywhere.
 8. Update `wiki/index.md` and append to `wiki/log.md`.
-9. `git add -A && git commit -m "ingest: <source>"`
+9. **Update `wiki/synthesis/research_roadmap.md`** if you maintain one —
+   does this source fill a gap, introduce a new tool, or reveal a new gap?
+   See "Research roadmap" below.
+10. `git add -A && git commit -m "ingest: <source>"`
+11. **Synthesis prompt** — after the ingest is complete, ask the user a
+    targeted comparison question naming 1–2 specific existing wiki pages
+    and asking about a concrete relationship or difference. Example:
+    "How does this paper's bound compare to the one in [[existing_page]] —
+    stronger conditions, or a different regime?" If the answer reveals a
+    comparison worth keeping, suggest creating a comparison page.
 
 A single ingest typically touches 5–15 pages.
 
@@ -69,25 +78,141 @@ the wiki about X".
 
 Triggered by "lint the wiki", "audit", "what's stale".
 
-Checks: orphan pages, broken wikilinks, frontmatter drift, stub pages,
-index staleness, duplicate concepts. Report; do not auto-fix.
+Checks:
+
+1. **Contradictions** — claims that conflict across pages. Flag with
+   `> **Contradiction**:` blockquotes on both pages.
+2. **Stale content** — claims citing older sources when newer sources
+   supersede them. Update, or annotate with `(superseded by [[newer]])`.
+3. **Orphan pages** — pages with no incoming `[[wikilinks]]`.
+4. **Phantom links** — `[[foo]]` where `wiki/**/foo.md` does not exist.
+   Either create the page or fix the link.
+5. **Missing concepts** — terms appearing in 3+ pages without their own
+   concept page. Suggest creation.
+6. **Missing cross-references** — semantically related pages that do not
+   link to each other. Add `[[wikilinks]]` in both directions.
+7. **Thin pages** — fewer than 3 sections or under ~200 words. Expand or
+   merge.
+8. **Synthesis gaps** — clusters of 3+ related pages sharing a theme but
+   lacking a unifying comparison / synthesis page. Suggest creation.
+9. **Mathematical spot-check** — for entity pages with subtype `inequality`
+   or `proof_technique`, sample one theorem statement per page and cross-
+   verify against its cited source: conditions, constants, asymptotic
+   notation. Report discrepancies as `> **Math check**:` blockquotes.
+
+Report grouped by category; do not auto-fix. Surface issues for the user
+to decide.
+
+---
+
+## Page types and frontmatter
+
+Every page has YAML frontmatter:
+
+```yaml
+---
+title: "Page Title"
+type: source | concept | entity | comparison | synthesis
+subtype:             # entity pages only
+created: YYYY-MM-DD
+updated: YYYY-MM-DD
+sources: []          # raw/ filenames or source page filenames this draws from
+related: []          # related page filenames
+tags: []
+---
+```
+
+### Entity subtypes
+
+Every entity page must declare a `subtype`:
+
+- **`algorithm`** — computational procedures with inputs / outputs /
+  complexity (e.g. spectral clustering, belief propagation, Louvain).
+- **`math_object`** — mathematical structures, distributions, matrices
+  (e.g. ε-net, sub-gaussian distribution, non-backtracking matrix).
+- **`proof_technique`** — reusable proof strategies with templates and
+  applicability conditions (e.g. Le Cam's two-point method, exponential
+  tilting, Chernoff).
+- **`inequality`** — named bounds, theorems, and identities with precise
+  statements (e.g. Bernstein, Davis–Kahan, matrix concentration bounds).
+
+Grouping entities by subtype in `wiki/index.md` keeps navigation sane as
+the wiki grows.
 
 ---
 
 ## Page rules
 
-- **Frontmatter**: every page has YAML frontmatter with `title`, `type`,
-  `created`, `updated`, `sources`, `related`, `tags`. Bump `updated` on
-  every edit.
+- **Frontmatter**: bump `updated` on every edit.
 - **File names**: `snake_case.md`. Lowercase. Underscores. No spaces, no
   punctuation except the leading path segment.
 - **Math**: LaTeX. `$inline$` and `$$display$$`. Obsidian renders both.
-- **Wikilinks**: mandatory when a concept has its own page. `[[page_name]]`,
-  no `.md` suffix.
+- **Wikilinks**: mandatory when a concept has its own page.
+  `[[page_name]]`, no `.md` suffix.
 - **Sources cited**: every factual claim in a concept page links to at
   least one source page.
 - **No hedging in wiki pages.** Wiki pages state what the sources say. If
   sources disagree, the page lists both positions — it does not equivocate.
+- **Provenance-tag key claims.** After important statements (theorem
+  results, rate bounds, algorithmic guarantees, cross-source connections),
+  add inline attribution:
+  - `(Author Year, Thm N.N)` for direct extraction from a single source.
+  - `(cf. [[page_a]], [[page_b]])` for cross-source inference by the LLM.
+  Not every sentence needs tagging — focus on claims a reader might want
+  to verify or trace back.
+- **Flag contradictions** explicitly: `> **Contradiction**: ...` blockquote
+  on **both** pages involved.
+
+---
+
+## Tool integration
+
+The skill is LLM-agnostic, but if the user has these tools the wiki
+operations benefit from them. Choose whichever fits the environment:
+
+| Task | Recommended tool | When |
+|---|---|---|
+| Extract PDF / image content | Dedicated extractor (`pdftotext`, `pdfplumber`, LLM-based extractor with long context) | Every `ingest` with a PDF or image source |
+| Structured paper analysis | A `paper-reader` skill or the Task / Challenge / Insight / Flaw / Motivation framework | Every `ingest` of a research paper |
+| Search for new sources | A `paper-lookup` skill (multi-database academic search) | When `lint` suggests gaps, or exploring a new subtopic |
+| Systematic literature search | A `literature-review` skill | When building a new topic area from scratch |
+| Write manuscripts from wiki | A `scientific-writing` skill | When drafting papers using wiki content |
+| Rigorous review of synthesis | Multi-model pipeline (adversarial review + arbitration) | For important synthesis or comparison pages |
+
+---
+
+## Index scalability
+
+`wiki/index.md` is the primary navigation aid. To keep it useful as the
+wiki grows:
+
+- **Group entities by subtype** (Algorithms, Math Objects, Proof
+  Techniques, Inequalities) rather than a flat list.
+- **Keep each entry to one line** — title + one-clause summary.
+- **At ~100 pages**: consider adding a local search MCP (e.g. `qmd` with
+  BM25 + vector) so the LLM can search without reading the full index.
+- **At ~200 pages**: the index alone will not fit in context. Search
+  becomes mandatory, and the index becomes a human-browsable TOC only.
+
+---
+
+## Research roadmap (optional but recommended)
+
+If this wiki serves an active research project, maintain
+`wiki/synthesis/research_roadmap.md` as a living document tracking how
+wiki content serves your open problems. Each proof chain / experiment /
+open question lists tools needed (covered vs. missing) and wiki pages
+that supply them.
+
+On every `ingest`, update the roadmap:
+
+- Does this source fill a gap (❌ → ⚠️ → ✅)? Update the status column.
+- Does it introduce a new tool the project could use? Add a row.
+- Does it reveal a new gap? Add it to the Gaps section.
+- Add a one-line entry to "What Each Source Gives This Project".
+
+If the source has zero relevance, note that explicitly rather than
+skipping silently — that negative evidence is itself useful.
 
 ---
 

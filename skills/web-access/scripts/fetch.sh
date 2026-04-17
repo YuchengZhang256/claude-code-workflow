@@ -24,6 +24,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATTERN_DIR="$SCRIPT_DIR/../references/site-patterns"
 URL="${1:-}"
 
 usage() {
@@ -41,6 +42,71 @@ if [ -z "$URL" ]; then
 fi
 
 log() { printf '[web-access] %s\n' "$*" >&2; }
+
+# -------- Per-domain site patterns -------------------------------------------
+# Lookup order: <host>.conf, then <host>.conf without leading "www.".
+# Files are shell-sourced, so they may set any of these variables:
+#   PREFER_LAYER         one of: jina | stealth | wayback (try first)
+#   SKIP_LAYERS          space-separated list of layers to skip entirely
+#   JINA_WAIT_FOR        CSS selector → X-Wait-For-Selector
+#   JINA_TARGET_SELECTOR CSS selector → X-Target-Selector
+#   JINA_TIMEOUT         integer seconds → X-Timeout
+#   STEALTH_REFERER      Referer header for the stealth-curl layer
+#   STEALTH_EXTRA        extra raw header lines (newline-separated)
+#   NOTES                free text echoed to stderr for debugging
+# Pattern files are owned by the user; sourcing them is intentional. The
+# only sanitization is on the host-derived filename, not the file body.
+extract_host() {
+  local u="$1" h
+  # Strip scheme if present.
+  if [[ "$u" == *://* ]]; then
+    h="${u#*://}"
+  else
+    h="$u"
+  fi
+  # Strip path / query / fragment — anything after the authority.
+  h="${h%%/*}"
+  h="${h%%\?*}"
+  h="${h%%#*}"
+  # Strip userinfo (anything before the last '@' in the authority).
+  h="${h##*@}"
+  # Strip port.
+  h="${h%%:*}"
+  printf '%s' "$h" | tr '[:upper:]' '[:lower:]'
+}
+
+load_site_pattern() {
+  local host="$1"
+  [ -d "$PATTERN_DIR" ] || return 1
+  local candidates=("$host")
+  if [[ "$host" == www.* ]]; then
+    candidates+=("${host#www.}")
+  fi
+  local c f
+  for c in "${candidates[@]}"; do
+    # Reject anything that escaped sanitization (defense in depth).
+    [[ "$c" =~ ^[a-z0-9.-]+$ ]] || continue
+    f="$PATTERN_DIR/$c.conf"
+    if [ -f "$f" ]; then
+      log "site-pattern: $c.conf"
+      # shellcheck disable=SC1090
+      source "$f"
+      [ -n "${NOTES:-}" ] && log "  notes: $NOTES"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Site-pattern variables (initialized empty so `set -u` is happy).
+PREFER_LAYER=""
+SKIP_LAYERS=""
+JINA_WAIT_FOR=""
+JINA_TARGET_SELECTOR=""
+JINA_TIMEOUT=""
+STEALTH_REFERER=""
+STEALTH_EXTRA=""
+NOTES=""
 
 # -------- Tunables ------------------------------------------------------------
 CHROME_UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -115,6 +181,9 @@ if is_pdf_url "$URL"; then
   exit 2
 fi
 
+# Load any per-domain hints (silent if no match).
+load_site_pattern "$(extract_host "$URL")" || true
+
 # -------- Challenge / empty-page detector -------------------------------------
 is_blocked() {
   local text="$1"
@@ -154,10 +223,13 @@ html_to_text() {
 # ============================ LAYER 1: Jina Reader ============================
 try_jina() {
   log "Layer 1: Jina Reader"
-  curl -sL --max-time 45 --max-filesize "$MAX_FILESIZE" \
-    -H "Accept: text/markdown" \
-    -H "X-Return-Format: markdown" \
-    "https://r.jina.ai/$URL" 2>/dev/null
+  local args=(-sL --max-time 45 --max-filesize "$MAX_FILESIZE"
+    -H "Accept: text/markdown"
+    -H "X-Return-Format: markdown")
+  [ -n "$JINA_WAIT_FOR" ]        && args+=(-H "X-Wait-For-Selector: $JINA_WAIT_FOR")
+  [ -n "$JINA_TARGET_SELECTOR" ] && args+=(-H "X-Target-Selector: $JINA_TARGET_SELECTOR")
+  [ -n "$JINA_TIMEOUT" ]         && args+=(-H "X-Timeout: $JINA_TIMEOUT")
+  curl "${args[@]}" "https://r.jina.ai/$URL" 2>/dev/null
 }
 
 # ============================ LAYER 2: Stealth curl ===========================
@@ -168,20 +240,27 @@ try_stealth() {
     log "Layer 2: stealth curl (plain curl — install curl-impersonate for TLS spoofing)"
   fi
   local bin="${IMPERSONATE:-curl}"
-  "$bin" -sL --compressed --max-time 30 --max-filesize "$MAX_FILESIZE" \
-    -A "$CHROME_UA" \
-    -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8" \
-    -H "Accept-Language: en-US,en;q=0.9" \
-    -H "Accept-Encoding: $ACCEPT_ENCODING" \
-    -H "sec-ch-ua: \"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not?A_Brand\";v=\"24\"" \
-    -H "sec-ch-ua-mobile: ?0" \
-    -H "sec-ch-ua-platform: \"macOS\"" \
-    -H "Sec-Fetch-Dest: document" \
-    -H "Sec-Fetch-Mode: navigate" \
-    -H "Sec-Fetch-Site: none" \
-    -H "Sec-Fetch-User: ?1" \
-    -H "Upgrade-Insecure-Requests: 1" \
-    "$URL" 2>/dev/null
+  local args=(-sL --compressed --max-time 30 --max-filesize "$MAX_FILESIZE"
+    -A "$CHROME_UA"
+    -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+    -H "Accept-Language: en-US,en;q=0.9"
+    -H "Accept-Encoding: $ACCEPT_ENCODING"
+    -H "sec-ch-ua: \"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not?A_Brand\";v=\"24\""
+    -H "sec-ch-ua-mobile: ?0"
+    -H "sec-ch-ua-platform: \"macOS\""
+    -H "Sec-Fetch-Dest: document"
+    -H "Sec-Fetch-Mode: navigate"
+    -H "Sec-Fetch-Site: none"
+    -H "Sec-Fetch-User: ?1"
+    -H "Upgrade-Insecure-Requests: 1")
+  [ -n "$STEALTH_REFERER" ] && args+=(-H "Referer: $STEALTH_REFERER")
+  if [ -n "$STEALTH_EXTRA" ]; then
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      args+=(-H "$line")
+    done <<< "$STEALTH_EXTRA"
+  fi
+  "$bin" "${args[@]}" "$URL" 2>/dev/null
 }
 
 # ============================ LAYER 3: Wayback Machine ========================
@@ -238,7 +317,37 @@ emit_success() {
   log "  ✓ success via $layer (${#payload} raw bytes)"
 }
 
-for layer in jina stealth wayback; do
+# Build the layer order: PREFER_LAYER first (if set), then defaults, minus
+# anything in SKIP_LAYERS. Each layer appears at most once.
+build_layer_order() {
+  local default=(jina stealth wayback)
+  local result=()
+  local seen=" "
+  if [ -n "$PREFER_LAYER" ]; then
+    case "$PREFER_LAYER" in
+      jina|stealth|wayback)
+        if [[ " $SKIP_LAYERS " == *" $PREFER_LAYER "* ]]; then
+          log "  ignoring PREFER_LAYER=$PREFER_LAYER (also in SKIP_LAYERS)"
+        else
+          result+=("$PREFER_LAYER"); seen+="$PREFER_LAYER "
+        fi
+        ;;
+      *) log "  ignoring unknown PREFER_LAYER=$PREFER_LAYER" ;;
+    esac
+  fi
+  local l
+  for l in "${default[@]}"; do
+    [[ "$seen" == *" $l "* ]] && continue
+    [[ " $SKIP_LAYERS " == *" $l "* ]] && { log "  skipping $l (SKIP_LAYERS)"; continue; }
+    result+=("$l"); seen+="$l "
+  done
+  printf '%s\n' "${result[@]}"
+}
+
+LAYER_ORDER=()
+while IFS= read -r l; do LAYER_ORDER+=("$l"); done < <(build_layer_order)
+
+for layer in "${LAYER_ORDER[@]}"; do
   case "$layer" in
     jina)    OUT=$(try_jina) ;;
     stealth) OUT=$(try_stealth) ;;

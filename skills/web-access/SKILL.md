@@ -1,6 +1,6 @@
 ---
 name: web-access
-description: "Fetch web pages that built-in WebFetch / WebSearch cannot read — Cloudflare or PerimeterX walls, JS-rendered SPAs, paywalled or login-gated content, sites that block by geo/TLS fingerprint, 403/429/503 endpoints. Use whenever WebFetch returns an error, empty body, CAPTCHA / challenge stub, 'please enable JavaScript' page, or obviously-truncated content. Primary entry point: scripts/fetch.sh <url>, which runs a Jina Reader → stealth curl → Wayback Machine fallback chain. If the URL points to a PDF, the script exits with code 2 and defers to your PDF-extraction tool. For login-gated or interaction-heavy pages, escalate to the chrome-devtools MCP tools."
+description: "Fetch web pages that built-in WebFetch / WebSearch cannot read — Cloudflare or PerimeterX walls, JS-rendered SPAs, paywalled or login-gated content, sites that block by geo/TLS fingerprint, 403/429/503 endpoints. Use whenever WebFetch returns an error, empty body, CAPTCHA / challenge stub, 'please enable JavaScript' page, or obviously-truncated content. Primary entry point: scripts/fetch.sh <url>, which runs a Jina Reader → stealth curl → Wayback Machine fallback chain biased by per-domain hints from references/site-patterns/. For multi-URL research fanout, use scripts/fetch-parallel.sh which runs N independent fetches concurrently and emits a manifest. If the URL points to a PDF, the script exits with code 2 and defers to your PDF-extraction tool. For login-gated or interaction-heavy pages, escalate to the chrome-devtools MCP tools."
 allowed-tools: Bash, Read, WebFetch, mcp__chrome-devtools__navigate_page, mcp__chrome-devtools__new_page, mcp__chrome-devtools__take_snapshot, mcp__chrome-devtools__evaluate_script, mcp__chrome-devtools__wait_for, mcp__chrome-devtools__list_pages, mcp__chrome-devtools__select_page
 ---
 
@@ -90,6 +90,70 @@ case $rc in
   3) echo "Escalate to chrome-devtools MCP" ;;
 esac
 ```
+
+---
+
+## Parallel fanout — `scripts/fetch-parallel.sh`
+
+For research fanout (N independent URLs), use the parallel wrapper instead
+of looping `fetch.sh` serially:
+
+```bash
+bash ~/.claude/skills/web-access/scripts/fetch-parallel.sh -P 4 \
+  "https://site-a/page" \
+  "https://site-b/page" \
+  "https://site-c/page"
+
+# Or pipe URLs in from stdin (one per line):
+cat urls.txt | bash ~/.claude/skills/web-access/scripts/fetch-parallel.sh -P 4 -
+```
+
+**Options:**
+
+- `-P N` — max concurrent fetches (default 4). Keep modest: Jina Reader is
+  rate-limited, `curl-impersonate` is CPU-heavy.
+- `-o DIR` — output directory (defaults to a fresh `mktemp` dir).
+
+**Output** (stdout, TSV): `idx<TAB>exit_code<TAB>url<TAB>content_file`,
+sorted by input order. Per-URL exit codes are preserved verbatim from
+`fetch.sh` — route rc=2 rows to a PDF extractor, rc=3 rows to chrome-
+devtools MCP. The wrapper itself exits 0 if every URL was dispatched.
+
+This is cheaper than spawning parallel subagents for pure URL fanout:
+shared-nothing processes that only touch the filesystem.
+
+---
+
+## Per-domain hints — `references/site-patterns/`
+
+Every time you discover that a specific site needs a particular header /
+CSS selector / layer order to fetch cleanly, capture it in
+`references/site-patterns/<host>.conf` so future fetches benefit
+automatically.
+
+Lookup order: exact host, then host with leading `www.` stripped.
+Filenames are sanitized (`^[a-z0-9.-]+$`); files are shell-sourced, so
+keep them to simple `KEY=value` assignments.
+
+**Recognized variables:**
+
+| Variable               | Purpose                                         |
+|------------------------|-------------------------------------------------|
+| `PREFER_LAYER`         | `jina` / `stealth` / `wayback` — tried first.   |
+| `SKIP_LAYERS`          | Space-separated layers to skip entirely.        |
+| `JINA_WAIT_FOR`        | CSS selector → `X-Wait-For-Selector` header.    |
+| `JINA_TARGET_SELECTOR` | CSS selector → `X-Target-Selector` header.      |
+| `JINA_TIMEOUT`         | Integer seconds → `X-Timeout` header.           |
+| `STEALTH_REFERER`      | `Referer:` header for the stealth-curl layer.   |
+| `STEALTH_EXTRA`        | Newline-separated extra header lines.           |
+| `NOTES`                | Free text echoed to stderr at fetch time.       |
+
+See `references/site-patterns/README.md` for the full spec and
+`_template.conf` for a copy-ready starting point.
+
+**When to add a pattern:** after a tricky fetch succeeds, ask what made it
+work. If the answer is "a specific selector / referer / layer", capture
+it. If "nothing special", do not — avoid clutter.
 
 ---
 
