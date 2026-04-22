@@ -1,6 +1,6 @@
 ---
 name: proof-audit
-description: Audit the theoretical appendix of a math/statistics paper or thesis for logical gaps, unjustified steps, missing assumptions, and edge cases. Output a structured fix plan with copy-pasteable LaTeX patches anchored by gap IDs. Use when the user says "audit this proof", "check appendix rigor", "find gaps in the proofs", or invokes /proof-audit. Best for pre-submission thesis review. NOT for teaching proofs (use explain-paper) or full-paper critique (use paper-reader).
+description: Audit the theoretical appendix of a math/statistics paper or thesis. Two modes — (1) default claim-local audit: logical gaps, unjustified steps, missing assumptions, edge cases, LaTeX-patch fix plan; (2) `--rate-chain` mode: symbolically compose lemma-chain rates end-to-end via sympy and diff against a top-level "explicit rate" corollary (for composed big-O rate claims across 10+ lemmas). Trigger default mode on "audit this proof", "check appendix rigor", "find gaps in the proofs". Trigger rate-chain mode on "check the rate composition", "verify end-to-end rate", "does cor X's rate match its proof chain". NOT for teaching proofs (use explain-paper) or full-paper critique (use paper-reader).
 ---
 
 # proof-audit
@@ -135,3 +135,31 @@ $$\lim_{n\to\infty} \mathbb{E}[f_n(X)] = \mathbb{E}\bigl[\lim_{n\to\infty} f_n(X
 ## References
 
 - `references/common_proof_gaps.md` — 概率/统计证明中 ~50 个常见 gap 模式的 checklist，三个 persona 在审计时会参考此清单。
+
+---
+
+## Rate-chain mode (`/proof-audit --rate-chain`)
+
+当审计目标是**一条 composed big-O rate corollary**（例如 `thm:misclustering`、`cor:*-consistency`、`cor:*-rate`），而非单条 claim 的形式正确性时，启用本 mode。
+
+本 mode 做 Phase 1–4 默认流程原理上做不到的事：**跨 10+ lemma 的代数合成**。Persona-based 切片审计看不到这种跨章节的 rate exponent 错位 —— 需要 sympy 级代数合成才能抓。
+
+### 触发
+
+- `/proof-audit --rate-chain <paper.tex> <target-label>` — 显式指定目标 corollary。
+- 自然语言触发："check the rate composition"、"verify end-to-end rate"、"does cor X's rate match its proof chain"、"验证 rate 链合成"。
+- 反触发：一次性 bound、数值 benchmark、非 rate 型 corollary → 回退默认 Phase 1–4 claim-local 审计。
+
+### 工作流 & 脚本
+
+本 mode 的完整工作流（Phase A 提取、Phase B 双盲 extractor、Phase B.2/B.4 一致性检查、Phase C sympy 代数合成、Phase D walked-vs-stated diff 报告）见 `modes/rate-chain/MODE.md`。关联脚本、schema、reference material、example runs 都在 `modes/rate-chain/` 子目录下：
+
+- `modes/rate-chain/MODE.md` — 完整 phase 说明
+- `modes/rate-chain/scripts/` — `compose.py` 等确定性脚本（sympy 代数合成）
+- `modes/rate-chain/schema/` — rate-table JSON schema
+- `modes/rate-chain/references/` — rate-composition pattern 清单
+- `modes/rate-chain/example_runs/` — 历史运行样例
+
+### 跨模型冗余（替代已删除的 `rate-chain-audit-gpt`）
+
+若需 Claude ↔ GPT 双盲交叉验证（原 `rate-chain-audit-gpt` 的功能），把 Phase B.1 的两个 extractor subagent 换成 `ocw run gpt`（GPT-5.4）调用，compose/diff 阶段仍走同一份 `modes/rate-chain/scripts/compose.py`。两轮输出 rate-table 若一致，合并置信度 ≈ 0.99；若有不一致，自动列为 flagged entry 交人类判断。
