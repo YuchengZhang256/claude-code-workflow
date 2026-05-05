@@ -162,4 +162,4 @@ $$\lim_{n\to\infty} \mathbb{E}[f_n(X)] = \mathbb{E}\bigl[\lim_{n\to\infty} f_n(X
 
 ### 跨模型冗余（替代已删除的 `rate-chain-audit-gpt`）
 
-若需 Claude ↔ GPT 双盲交叉验证（原 `rate-chain-audit-gpt` 的功能），把 Phase B.1 的两个 extractor subagent 换成 `ocw run gpt`（GPT-5.4）调用，compose/diff 阶段仍走同一份 `modes/rate-chain/scripts/compose.py`。两轮输出 rate-table 若一致，合并置信度 ≈ 0.99；若有不一致，自动列为 flagged entry 交人类判断。
+若需 Claude ↔ GPT 双盲交叉验证（原 `rate-chain-audit-gpt` 的功能），把 Phase B.1 的两个 extractor subagent 换成 `ocw run gpt`（GPT-5.5）调用，compose/diff 阶段仍走同一份 `modes/rate-chain/scripts/compose.py`。两轮输出 rate-table 若一致，合并置信度 ≈ 0.99；若有不一致，自动列为 flagged entry 交人类判断。

@@ -3,6 +3,11 @@
 > This is a **template**. Copy to `~/.claude/CLAUDE.md`, delete this quote block,
 > and fill in the `<...>` placeholders. Everything below the "Technical Rules"
 > divider is generic and can be kept verbatim.
+>
+> **Design principle:** keep this file short. Skills already inject their own
+> descriptions and `SKILL.md` content on demand, so don't duplicate skill
+> documentation here. Every line in this file costs tokens on every turn —
+> only rules that are *always relevant* belong in the global scope.
 
 ---
 
@@ -34,10 +39,9 @@ explanation before the abstract formulation.
 
 ## Math Formatting
 
-**Always use LaTeX for mathematical expressions** — in all output, including
-conversation responses and file content. Use `$...$` for inline math and
-`$$...$$` for display math. Never write math as plain text (e.g. write
-`$E[Y(1) - Y(0)]$` not `E[Y(1) - Y(0)]`).
+**Always use LaTeX for mathematical expressions.** Use `$...$` for inline math
+and `$$...$$` for display math. Never write math as plain text (write
+`$E[Y(1) - Y(0)]$`, not `E[Y(1) - Y(0)]`).
 
 ---
 
@@ -45,173 +49,64 @@ conversation responses and file content. Use `$...$` for inline math and
 # ---------------
 # The sections below are generic and safe to keep verbatim. They are the
 # "hard rules" that make the workflow skills actually change Claude's behavior.
+# Skill-specific protocols (web-access escalation, multi-model review pipeline,
+# etc.) intentionally live in each skill's SKILL.md, not here — Claude loads
+# them on demand when the skill triggers, instead of paying the token cost on
+# every turn.
 
 ## Session Continuity (Handoff)
 
-**At the start of every conversation, check if `HANDOFF.md` exists in the
-working directory.**
-
-If it exists, read it immediately before doing anything else. It is a briefing
-left by the previous agent and contains the project goal, current state,
-completed work, next steps, and key decisions. Treat it as authoritative
-context for this session.
-
-Do not mention reading the file unless the user asks — just absorb it and
-proceed as if you have full context.
+At the start of every conversation, silently check if `HANDOFF.md` exists in
+the working directory. If it does, read it before anything else — it is
+authoritative context from the previous agent. Do not announce the read.
 
 Pair this with the `handoff` skill: at the end of a significant session, run
 `/handoff` (or say "save handoff") to compress the session into `HANDOFF.md`
 for the next agent.
 
-## Web Fetching — WebFetch Failure Escalation
+## PDF / Image Reading — routing rule
 
-**When the built-in `WebFetch` tool fails or returns degraded content,
-immediately escalate to the `web-access` skill. Do not give up or tell the
-user "can't access this site" without trying the escalation first.**
+Route PDF/image reading by size and complexity, not as a reflex:
 
-Failure signals that MUST trigger escalation:
+- **Long or complex PDFs** (>20 pages, scanned, heavy math/figure layout) and
+  **all images** → hand off to a dedicated extractor (e.g. `pdftotext`,
+  `pdfplumber`, or an LLM-based extractor with long context) and use the
+  extracted text as context.
+- **Short, simple PDFs** (≤20 pages, primarily text, clean digital
+  typesetting) → use the built-in `Read` tool directly. No need to spin up
+  an extractor.
 
-- HTTP 403 / 429 / 503 status
-- Empty response body
-- A CAPTCHA page or challenge screen ("Just a moment...", "Checking your
-  browser", Cloudflare Ray ID, "Attention Required")
-- A "please enable JavaScript" stub
-- Obviously truncated content (far shorter than the page should be)
-- Unrendered SPA HTML (React / Vue / Next.js app shells with no real content)
+The 20-page threshold is a heuristic — a math-heavy 15-page appendix is still
+extractor territory; a plain 25-page report may not be. When unsure, prefer the
+extractor — the cost of a wrong extractor call is small; the cost of blowing
+context on a direct `Read` is larger.
 
-On detecting any of the above, invoke the `web-access` skill's entry point:
+## Subagent Dispatch — judgment rules
 
-```bash
-bash ~/.claude/skills/web-access/scripts/fetch.sh "<URL>"
-```
+Parallel subagents (via `Agent` / `Task`) burn real tokens and parent-context;
+use them with intent.
 
-Exit code handling:
-- `0` — success, stdout is the cleaned content
-- `2` — URL is a PDF, defer to a dedicated PDF extraction tool
-- `3` — all fallback layers failed, then escalate to the Chrome DevTools MCP
-  tools as described in `~/.claude/skills/web-access/SKILL.md`
+**Spawn when**: truly independent fanout (N papers to score, N theorems to
+audit, N disjoint codebase searches); multi-persona review (pedantic /
+adversarial / generous — lenses, not `reviewer A/B`); multi-model
+cross-validation → delegate to the `multi-model-review` skill, don't
+hand-roll.
 
-This rule overrides any tendency to "give up gracefully" — the user wants
-the content retrieved, not an apology. Only stop escalating after Layer 4
-(Chrome DevTools MCP) has also failed.
+**Don't spawn when**: sequential dependency between agents; one Grep/Glob/Read
+suffices; main thread already doing the same work; brief would exceed expected
+output; whole task fits in main context.
 
-## PDF and Image Reading
+**Brief standard**: self-contained (subagent sees nothing from parent), explain
+WHY not just WHAT, specify output schema and word cap, use absolute paths.
+Parallel same-task agents share one output schema and receive lens-specific
+briefs.
 
-**For PDF and image content extraction, use a dedicated extraction tool before
-processing the content.** The built-in `Read` tool can handle small PDFs
-inline, but large scientific PDFs, scanned documents, and images are better
-handled by a purpose-built extractor.
+URL fanout is NOT a subagent case — use `~/.claude/skills/web-access/scripts/fetch-parallel.sh`
+(cheaper and purpose-built).
 
-Recommended options (pick whichever is installed):
+## External-Model CLIs — filesystem isolation
 
-- `pdftotext` (from `poppler-utils`) — fast, text-only, no layout
-- `pdfplumber` (Python) — tables and layout preserved
-- An LLM-based extractor with a long context window — best for scanned or
-  complex PDFs; feed the file and prompt for verbatim extraction
-
-After extraction, use the extracted text as context and perform the user's
-actual request yourself. Only fall back to `Read` on a PDF if the dedicated
-tool is unavailable.
-
-## Subagent discipline
-
-Parallel subagents (via the `Agent` / `Task` tool) cost real tokens. Spawn
-them deliberately — too many wastes context, too few misses fan-out
-opportunities.
-
-### When to spawn parallel subagents
-
-Good fits:
-
-- **Literature fanout** — N candidate papers to read / score independently
-  → N parallel subagents, one per paper.
-- **Per-theorem proof audit** — each lemma / theorem is independent → audit
-  in parallel.
-- **Multi-persona review** — `pedantic / adversarial / generous` reviewers
-  running in parallel on the same artifact (see `proof-audit`,
-  `lit-collision`).
-- **Independent file-path searches** — several disjoint codebases or
-  directories searched concurrently.
-- **Multi-model cross-validation** — delegate to the `multi-model-review`
-  skill rather than hand-rolling `Agent` calls.
-
-Exception: pure bulk URL fetching uses the `web-access` parallel wrapper
-(`scripts/fetch-parallel.sh`) — it is cheaper than spawning agents.
-
-### When NOT to spawn (anti-patterns)
-
-- **Sequential dependency** — later subagent needs the earlier one's output
-  → run sequentially.
-- **A single Grep / Glob / Read would suffice** → do not wrap in `Agent`.
-- **The main thread is already doing the same work** → do not duplicate.
-- **Brief is longer than the expected output** → overhead > value.
-- **The whole task fits in the main context** → no need to outsource.
-
-### Briefing standard
-
-Subagents see none of the parent session. The brief must be self-contained:
-
-- **Self-contained** — all necessary context, file paths, and goals in the
-  brief itself.
-- **Explain the WHY, not just the WHAT** — state intent so the agent can
-  make judgment calls, not just follow a script.
-- **Specify the output format** — word limit, structure, schema.
-- **Concrete anchors** — absolute paths, line numbers, specific source
-  URLs / DOIs.
-- **End with "report under N words"** — cap the response.
-
-Narrow step-by-step briefs ("do step 1, step 2, step 3") turn a smart
-agent into a dumb one. Give it goals and constraints; let it reason.
-
-### Role definition (for parallel same-type subagents)
-
-Each parallel subagent must:
-
-- **Have a named lens** — use `pedantic / adversarial / generous`, not
-  `reviewer A / reviewer B`.
-- **Emit the same schema** — so the main thread can merge programmatically
-  (matching JSON fields or Markdown sections).
-- **Receive a lens-specific brief** — what this role covers and ignores,
-  to prevent overlap.
-
-### Anti-pattern checklist
-
-- Over-spawning for trivial tasks (one `Read` would have sufficed).
-- Parallel subagents editing the same files → merge conflicts.
-- Fuzzy role boundaries → redundant findings, wasted tokens.
-- Main thread duplicating subagent work.
-- Treating `Agent` as free — every call burns real tokens. Always ask
-  first: *can a single `Grep` / `Read` solve this?*
-
-## Multi-Model Review Protocol
-
-When the user asks for rigorous review (proofs, code, architecture) using
-multiple models:
-
-### Model Roles
-- **Primary (self)**: Precise verifier. Good at algebraic/probabilistic
-  verification, systematic coverage, low false-positive rate. Use as first-pass
-  verifier and final arbitrator.
-- **Adversarial reviewer** (a second model invoked via CLI / skill): Adversarial
-  stress-tester. Excels at finding structural logic flaws, dependency chain
-  breaks, and implicit assumptions. Typically has a higher false-positive rate
-  — always cross-check findings.
-- **Second-opinion models**: Brainstorming, long-document analysis.
-
-### Recommended Pipeline
-1. **Primary agents** verify the work (parallel, different focus areas)
-2. **Adversarial reviewer** stress-tests the verified work
-3. **Primary** arbitrates any adversarial findings (distinguish real bugs from
-   false positives)
-4. Fix real issues, then repeat from step 2 if needed
-
-### Critical Rule for External Models
-**External model CLIs cannot read files from the filesystem of the current
-session.** They only see content you explicitly attach. Therefore:
-
-- Attach current git changes via `--diff` or equivalent (always fresh)
-- Attach files by pattern via `--files '<glob>'` or equivalent
-- Use `-f <file>` for specific individual files
-- Never rely on the external model to "just read" a file path — always attach
-
-See `~/.claude/skills/multi-model-review/SKILL.md` for concrete protocols.
+External-model CLIs (GPT / Gemini / Kimi / etc., invoked via their own skills)
+cannot read your filesystem — content must be attached explicitly. Each CLI
+skill's `SKILL.md` documents its own attachment flags; when in doubt, prefer
+`--diff` (for fresh git changes) over stale `-f` files.
