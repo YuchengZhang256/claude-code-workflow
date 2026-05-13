@@ -1,0 +1,45 @@
+{
+  "$comment": "5 known-buggy minimal proofs. Phase 0 must hit >= 3 / 5 expected gap_types BY ANY FINDING. We accept *any* finding in the output whose gap_type is in expected_gap_types AND severity >= expected_severity_min. This means: (a) a snippet with two real issues passes as soon as either is correctly tagged, (b) GPT can emit multiple findings per claim and we accept the best match.",
+  "canaries": [
+    {
+      "canary_id": "K1-DCT",
+      "claim_id": "C1",
+      "claim_text": "Let f_n : R -> R be measurable with f_n(x) -> f(x) for every x in R. Then E[f_n(X)] -> E[f(X)].",
+      "expected_gap_types": ["DCT-no-dominating-function", "MCT-monotonicity-unverified", "uniform-integrability-missing"],
+      "expected_severity_min": 4,
+      "rationale": "Pointwise convergence does not imply expectation convergence without a dominating function (DCT), monotonicity (MCT), or uniform integrability. Classic counterexample: f_n = n * indicator(0, 1/n). Any of three enum tags is acceptable since all three are valid recovery conditions."
+    },
+    {
+      "canary_id": "K2-Hoeffding",
+      "claim_id": "C2",
+      "claim_text": "Let X_1,...,X_n be independent with X_i in [a_i, b_i]. Then P(|S_n - E[S_n]| > t) <= 2 exp(-t^2 / sum_i (b_i - a_i)^2).",
+      "expected_gap_types": ["Hoeffding-constant-wrong"],
+      "expected_severity_min": 3,
+      "rationale": "Hoeffding's bound is exp(-2 t^2 / sum (b_i - a_i)^2); the factor of 2 in the numerator is missing here. The primary gap is the numerical constant; t-range nitpicks are secondary."
+    },
+    {
+      "canary_id": "K3-iid",
+      "claim_id": "C3",
+      "claim_text": "Let X_1, X_2, ... be a sample from a distribution P with finite mean mu. By the strong law of large numbers, (1/n) sum_{i=1}^n X_i -> mu almost surely.",
+      "expected_gap_types": ["iid-undeclared"],
+      "expected_severity_min": 3,
+      "rationale": "Says 'a sample from P' but does not state X_i are iid. SLLN requires iid (or weaker but explicit conditions like Etemadi pairwise iid). 'Sample' is ambiguous."
+    },
+    {
+      "canary_id": "K4-n-equals-1",
+      "claim_id": "C4",
+      "claim_text": "Let X_1, ..., X_n be a sample with sample variance S^2 = (1/(n-1)) sum_i (X_i - bar X)^2. Then S^2 is an unbiased estimator of sigma^2 for all n >= 1.",
+      "expected_gap_types": ["n-equals-1-trivial"],
+      "expected_severity_min": 3,
+      "rationale": "S^2 is undefined at n=1 (division by zero). Statement should require n >= 2."
+    },
+    {
+      "canary_id": "K5-cross-fitting",
+      "claim_id": "C5",
+      "claim_text": "Split the data into K folds. On fold k, train nuisance estimators (hat eta_k) on the K-1 other folds, and evaluate the doubly robust score at the held-out fold using hat eta_k. Then sum_k Score_k / n is an unbiased and asymptotically normal estimator of the target parameter.",
+      "expected_gap_types": ["cross-fitting-fold-indep-implicit"],
+      "expected_severity_min": 3,
+      "rationale": "Independence of hat eta_k from the held-out fold relies on sample splitting being independent of the data conditional on the partition; this conditioning must be stated explicitly, otherwise the orthogonality / debiased-ML argument leaks bias."
+    }
+  ]
+}

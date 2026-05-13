@@ -42,6 +42,9 @@ site/
 # Session handoffs — personal state, not public
 HANDOFF.md
 
+# proof-audit canary run artifacts (per-run output; not for the repo)
+skills/proof-audit/canary/runs/
+
 # Wiki starter runtime state (users should fork the starter separately)
 examples/research-wiki-starter/wiki/sources/
 examples/research-wiki-starter/wiki/concepts/

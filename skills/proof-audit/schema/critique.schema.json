@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claude-code-workflow.github.io/schemas/proof-audit/critique.schema.json",
+  "title": "Proof Audit Cross-Critique Output",
+  "description": "Strict structured output for Phase 2c cross-critique. One critiquing side reviews findings from the other side and decides per-finding whether to uphold, refute, partially uphold, or replace. OpenAI strict-mode: all properties listed in 'required'.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["critiquing_side", "critiqued_side", "critiques"],
+  "properties": {
+    "critiquing_side": {
+      "type": "string",
+      "enum": ["claude", "codex"],
+      "description": "Which side is doing the critique."
+    },
+    "critiqued_side": {
+      "type": "string",
+      "enum": ["claude", "codex"],
+      "description": "Which side's findings are being reviewed."
+    },
+    "critiques": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "original_claim_id",
+          "original_gap_type",
+          "original_persona",
+          "verdict",
+          "reasoning",
+          "alternative_gap_type",
+          "alternative_severity",
+          "alternative_description"
+        ],
+        "properties": {
+          "original_claim_id": {
+            "type": "string",
+            "pattern": "^C[0-9]+$"
+          },
+          "original_gap_type": {
+            "type": "string",
+            "description": "The gap_type the other side assigned. Use 'none' if the other side declared verified."
+          },
+          "original_persona": {
+            "type": "string",
+            "enum": ["pedantic", "adversarial", "generous", "codex-cross-model"]
+          },
+          "verdict": {
+            "type": "string",
+            "enum": ["uphold", "refute", "partial-uphold", "uphold-but-recategorize"],
+            "description": "uphold = original finding is correct; refute = false positive, no real gap; partial-uphold = real concern but severity/scope wrong; uphold-but-recategorize = real gap but wrong gap_type."
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "1-3 sentence justification. For refute, include a concrete reason why the other side is wrong (counter-example, missed assumption already in the paper, misread of the claim)."
+          },
+          "alternative_gap_type": {
+            "type": "string",
+            "description": "When verdict in {partial-uphold, uphold-but-recategorize}, propose a better gap_type from the gap.schema enum. Empty string '' otherwise."
+          },
+          "alternative_severity": {
+            "type": "integer",
+            "enum": [0, 1, 2, 3, 4, 5],
+            "description": "Replacement severity 1-5, or 0 if not proposing a change."
+          },
+          "alternative_description": {
+            "type": "string",
+            "description": "Replacement gap_description when partial-uphold or uphold-but-recategorize. Empty '' otherwise."
+          }
+        }
+      }
+    }
+  }
+}

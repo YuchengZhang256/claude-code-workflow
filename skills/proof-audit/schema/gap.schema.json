@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://claude-code-workflow.github.io/schemas/proof-audit/gap.schema.json",
+  "title": "Proof Audit Persona Output",
+  "description": "Strict structured output for a single persona (pedantic / adversarial / generous / codex-cross-model) in proof-audit Phase 2. Top-level is an object wrapping a `findings` array (OpenAI structured-output requires object root). Complex conditional validation (e.g. require latex_patch only when status != verified) is enforced by the host-side postflight script, not the schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["persona", "claim_audit_count", "findings"],
+  "properties": {
+    "persona": {
+      "type": "string",
+      "enum": ["pedantic", "adversarial", "generous", "codex-cross-model"],
+      "description": "Which persona produced this output."
+    },
+    "claim_audit_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of atomic claims actually inspected. Should match the size of the input claim list. Used by postflight to detect persona dropping claims silently."
+    },
+    "findings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/finding"}
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "All fields are 'required' to satisfy OpenAI strict-mode structured output. For semantically optional fields, use empty string '' or empty array [] as the null value.",
+      "required": [
+        "claim_id",
+        "claim_text_excerpt",
+        "status",
+        "gap_type",
+        "severity",
+        "confidence",
+        "gap_description",
+        "invoked_lemmas",
+        "preconditions",
+        "latex_patch",
+        "insertion_hint",
+        "hypertarget_anchor"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string",
+          "pattern": "^C[0-9]+$",
+          "description": "Stable claim ID from Phase 1 (e.g., 'C3'). One finding per gap; same claim may produce multiple findings."
+        },
+        "claim_text_excerpt": {
+          "type": "string",
+          "description": "Verbatim 1-2 sentence quote from the claim being audited."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "verified",
+            "gap",
+            "missing_assumption",
+            "unjustified_step",
+            "symbol_abuse",
+            "counterexample"
+          ],
+          "description": "Verdict. Use 'verified' only when persona has actively checked AND found no issue; do not use it as a default placeholder."
+        },
+        "gap_type": {
+          "type": "string",
+          "enum": [
+            "supremum-uncountable-index-non-measurable",
+            "conditional-expectation-sigma-undeclared",
+            "filtration-not-increasing",
+            "stopping-time-unverified",
+            "borel-measurability-default",
+            "measurable-image-naive",
+            "as-equality-treated-pointwise",
+            "DCT-no-dominating-function",
+            "MCT-monotonicity-unverified",
+            "Fubini-integrability-unverified",
+            "uniform-integrability-missing",
+            "sum-integral-swap-unjustified",
+            "limit-derivative-no-Leibniz",
+            "limit-sup-swap-wrong",
+            "iid-undeclared",
+            "independence-implicit-product-expectation",
+            "stationarity-undeclared",
+            "mixing-condition-missing",
+            "exchangeability-conflated-iid",
+            "Hoeffding-constant-wrong",
+            "dimension-blowup-unflagged",
+            "sub-gaussian-orlicz-undefined",
+            "union-bound-log-factor",
+            "McDiarmid-c-i-unverified",
+            "continuity-undeclared",
+            "differentiability-undeclared",
+            "boundedness-undeclared",
+            "Lipschitz-constant-implicit",
+            "identifiability-unproven",
+            "compactness-missing",
+            "n-d-limit-order-unspecified",
+            "n-h-limit-coupling-missing",
+            "double-vs-single-limit-conflated",
+            "cross-fitting-fold-indep-implicit",
+            "bootstrap-conditional-indep-implicit",
+            "regression-noise-X-indep-implicit",
+            "C-changing-line-to-line",
+            "n-overloaded-sample-and-dim",
+            "theta-theta0-collision",
+            "P-empirical-vs-population-collision",
+            "polynomial-tail-as-exponential",
+            "Gaussian-tail-constant-wrong",
+            "median-mean-conflated",
+            "n-equals-1-trivial",
+            "degenerate-distribution-unhandled",
+            "zero-prob-conditioning",
+            "boundary-parameter-Taylor-fail",
+            "discrete-continuous-mixed",
+            "martingale-difference-unverified",
+            "mixing-rate-vague",
+            "markov-ergodicity-unverified",
+            "clustered-as-iid",
+            "counterexample-extreme-regime",
+            "counterexample-degenerate-input",
+            "none",
+            "other"
+          ],
+          "description": "Required taxonomy. Use 'none' iff status == 'verified'. Use 'other' only if no enum value fits; if 'other', describe taxonomy in gap_description. The 52 substantive enums map 1-to-1 with references/common_proof_gaps.md."
+        },
+        "severity": {
+          "type": "integer",
+          "enum": [0, 1, 2, 3, 4, 5],
+          "description": "0 only when status == 'verified'. Otherwise: 1=cosmetic / 3=plausible-but-fixable / 5=proof-collapses-if-unaddressed."
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Persona's subjective probability that this is a real gap (not its own misreading)."
+        },
+        "gap_description": {
+          "type": "string",
+          "description": "1-3 sentence explanation in plain English. Required even for verified claims (say which check was passed)."
+        },
+        "invoked_lemmas": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "External lemmas/theorems used at this step (e.g., 'Lemma A.1', 'Slutsky')."
+        },
+        "preconditions": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Assumptions/regularity conditions the claim relies on."
+        },
+        "latex_patch": {
+          "type": "string",
+          "description": "Concrete LaTeX snippet that fixes the gap. Use empty string '' when status == 'verified'. When non-empty, MUST reference real label names from the paper source — host postflight checks this with grep."
+        },
+        "insertion_hint": {
+          "type": "string",
+          "description": "Where in the paper the patch should be inserted (e.g., 'Appendix A.2, before the DCT step'). Empty string when status == 'verified'."
+        },
+        "hypertarget_anchor": {
+          "type": "string",
+          "pattern": "^(gap_C[0-9]+_[a-zA-Z0-9_-]+|verified_C[0-9]+)$",
+          "description": "Backward-traceable anchor. Format: 'gap_<claim_id>_<gap_type>' for findings, 'verified_<claim_id>' for verified status. Used as \\hypertarget in patch."
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 ---
 name: proof-audit
-description: Audit the theoretical appendix of a math/statistics paper or thesis. Two modes — (1) default claim-local audit: logical gaps, unjustified steps, missing assumptions, edge cases, LaTeX-patch fix plan; (2) `--rate-chain` mode: symbolically compose lemma-chain rates end-to-end via sympy and diff against a top-level "explicit rate" corollary (for composed big-O rate claims across 10+ lemmas). Trigger default mode on "audit this proof", "check appendix rigor", "find gaps in the proofs". Trigger rate-chain mode on "check the rate composition", "verify end-to-end rate", "does cor X's rate match its proof chain". NOT for teaching proofs (use explain-paper) or full-paper critique (use paper-reader).
+description: "Audit math/stat proof rigor via 4-phase Claude+Codex debate; produce LaTeX patches with deterministic tier ranking. Use also for rate-chain composition with --rate-chain."
 ---
 
 # proof-audit
@@ -11,83 +11,121 @@ description: Audit the theoretical appendix of a math/statistics paper or thesis
 
 - **`explain-paper`**: 教会用户读懂一个证明 —— 本技能**不做**教学。
 - **`paper-reader`**: 对整篇论文做 5 层批判性解读 —— 本技能**不做**全文评论。
-- **`multi-model-review`**: 跨模型家族对抗评审 —— 本技能做**单模型多 persona** 评审。
+- **`multi-model-review`**: 跨模型家族对抗评审 —— 本技能在 Phase 2 内**已经**做了 Claude+Codex 跨模型评审，不需要再调 multi-model-review。
+- **`review-proof`**: 迭代式修复闭环 —— audit 完后，把 `THESIS_AUDIT.md` 喂给 `/review-proof` 做 audit → patch → 再 audit 循环。
 
 触发词: `/proof-audit <file>`、"audit the proofs in X"、"check appendix rigor"、"find gaps in the appendix"、"审阅附录严谨性"、"审计这篇论文的证明"。
 
 ## 输入
 
-- 一份论文/毕业论文的理论附录：PDF 或 LaTeX 源码。
+- 一份论文/毕业论文的理论附录：**优先 .tex 源码**；数字 PDF 仅作 fallback（见下 PDF policy）。
 - 可选：主文正文（用于核对记号与假设的引用一致性）。
+
+## 工件路径
+
+```
+<cwd>/
+└── proof_audit/
+    ├── claims.json                          # Phase 1
+    ├── findings_claude_pedantic.json        # Phase 2a
+    ├── findings_claude_adversarial.json     # Phase 2a
+    ├── findings_claude_generous.json        # Phase 2a
+    ├── findings_codex.json                  # Phase 2b
+    ├── critiques_claude_on_codex.json       # Phase 2c-i
+    ├── critiques_codex_on_claude.json       # Phase 2c-ii
+    ├── synthesized.json                     # Phase 2d
+    ├── lint_report.json                     # Phase 3 (patch lint)
+    └── RESIDUAL.md                          # Phase 2d Tier-E findings
+└── THESIS_AUDIT.md                          # Phase 4 (main deliverable)
+```
+
+---
+
+## Phase 0 — Canary preflight (mandatory, gate)
+
+Run before Phase 1 on every fresh session. Costs ~$1 on gpt-5.5 xhigh, ~5 min.
+
+```bash
+bash ~/.claude/skills/proof-audit/canary/run_canary.sh
+```
+
+5 known-buggy minimal proofs (DCT, Hoeffding, iid, n=1, cross-fitting) checked against expected `gap_type`. **Gate: ≥ 3 / 5 must HIT.** If fewer, skill aborts and writes a one-line `THESIS_AUDIT.md` saying "SKILL ABORTED: canary failed" with the failure details. Do not proceed with a bad extractor.
+
+Skip Phase 0 only if a clean canary report from the same day exists at `~/.claude/skills/proof-audit/canary/runs/<today>/canary_report.json` with `pass=true`.
+
+---
 
 ## Phase 1 — Atomic decomposition
 
-1. **读入附录内容**
-   - PDF → 按 global CLAUDE.md `## PDF and Image Reading` 规则路由：**长于 20 页或版式复杂**（附录常常如此）用 `cnai flash` 完整提取；**短小简单** PDF（≤ 20 页、主要是文本）可以直接 `Read`。论文附录默认偏复杂、嵌满公式，建议默认 `cnai flash` 更稳妥。
-   - `.tex` 源码 → 用 `Read` 工具直接读取。
-   - 若正文里有关键记号/假设定义，补读相关章节。
-2. **解析为原子 claim**。附录中每一个独立推理步骤（显式编号的 Lemma/Theorem/Proposition/Corollary **以及** 证明体中的非平凡 intermediate step）都是一个 claim。
-3. 给每个 claim 分配稳定 ID: `C1, C2, ...`，并建立如下 JSON 档案：
+1. **Read appendix**:
+   - `.tex` → use Read tool directly.
+   - Math-heavy digital PDF → use `pdftotext -layout` for relevant pages or Read small page ranges; never OCR (it mangles LaTeX). **Confidence is auto-capped at 0.6 for all PDF-extracted findings.**
+   - Scanned / handwritten / image-based PDF → **REJECT**; instruct user to obtain .tex or mathpix.
+2. **Collect global preamble**: scan whole paper for `\begin{assumption}` / `\begin{setup}` / `\newtheorem*{}{Assumption}` environments and any inline "Assume that ..." declarations in Section 1-2. Save as `proof_audit/global_assumptions.txt`. This is prepended to every persona prompt so cross-section assumption inheritance does not produce false-positive "undeclared" gaps.
+3. **Parse into atomic claims**: every numbered Lemma/Theorem/Proposition/Corollary **plus** every non-trivial intermediate step in proof bodies. Assign stable IDs `C1, C2, ...`. Each claim's record:
 
 ```json
 {
-  "claim_id": "C3",
+  "claim_id": "C7",
   "claim_text": "verbatim statement",
-  "preconditions": ["A1 regularity", "Assumption 2.1 (iid)"],
-  "invoked_lemmas": ["Lemma A.1", "Slutsky"],
-  "status": "verified | gap | missing_assumption | unjustified_step | symbol_abuse",
-  "gap_type": "limit-exchange | measurability | iid-undeclared | regularity | tail-bound | boundary-case | symbol-reuse | ...",
-  "severity": 1,
-  "latex_patch": "...",
-  "confidence": 0.0
+  "depends_on": ["C3", "C5", "Slutsky"],
+  "appendix_section": "A.2",
+  "file_line": "appendix.tex:412"
 }
 ```
 
-- `severity`: 1 (cosmetic) — 5 (证明崩塌)
-- `confidence`: 0.0–1.0, 模型对"这里确有 gap"的把握度
+Output: `proof_audit/claims.json`. This is **read-only context** for Phase 2.
 
-Phase 1 的输出是一份完整的 claim 清单（ID + claim_text + preconditions + invoked_lemmas），尚未评估 status。此清单会作为**只读上下文**传给 Phase 2 的三个 persona subagent。
+---
 
-## Phase 2 — Three parallel persona audits
+## Phase 2 — Multi-source debate audit
 
-按 global CLAUDE.md 的 `## Subagent 并行调用判断准则`，三路任务相互独立、无数据依赖、合并阶段在 Phase 3 显式处理——**默认通过 Agent 工具并行派发三个 persona subagent**。例外：
+Replaces the old "3-persona ensemble + magic confidence merge" design. Four sub-phases, two Claude-side and two Codex-side. Full spec in [`references/phase2_debate.md`](references/phase2_debate.md); high-level recap below.
 
-- 若 claim 数 < 5 且附录提取文本 < 10k token → 主线程可以顺序处理三个 persona，跳过 Agent 调用（该准则下"整个任务在主上下文里塞得下"的情形）
-- 若附录提取文本 > 50k token → 按证明/定理章节切片，每片独立跑一轮三 persona 审计，避免单个 persona subagent 的 context 被一次性塞满
+| Sub-phase | Side | Action |
+|---|---|---|
+| **2a** | Claude | 3 personas (pedantic / adversarial / generous) audit `claims.json` independently. Each produces a JSON file conforming to `schema/gap.schema.json`. Subagent fan-out if `len(claims) >= 5`; main-thread serial otherwise. **Personas use corrected briefs (with "positive companion" clauses, see phase2_debate.md §2a)** to avoid the `feedback_subagent_negative_constraints` trap. |
+| **2b** | Codex | One independent cross-model audit via `codex exec --output-schema schema/gap.schema.json -m gpt-5.5 -c model_reasoning_effort=xhigh`. Codex does **not** see Claude's findings. |
+| **2c** | Both | Cross-critique: Claude critiques `findings_codex.json`; Codex critiques the union of three Claude persona outputs. Each side emits a JSON conforming to `schema/critique.schema.json` with verdict ∈ {uphold, refute, partial-uphold, uphold-but-recategorize}. |
+| **2d** | Python | **Deterministic synthesis** by tier (A/B/C/D/E). No magic numbers. See tier table below. |
 
-每个 subagent 收到：
-1. Phase 1 的 claim 清单（完整）
-2. 附录原文（完整；PDF 情况下是 `cnai flash` 的提取结果）
-3. 自己的 persona brief（见下）
-4. 输出要求：一个 JSON array，元素为 Phase 1 中定义的 gap schema
+### Phase 2d synthesis tiers (no magic numbers)
 
-三个 persona brief：
+For each (claim_id, gap_type) pair, the tier is a deterministic function of (claude_sources, codex_sources, codex_verdict_on_claude, claude_verdict_on_codex):
 
-### Persona A — Pedantic reviewer（咬文嚼字型）
-> 你是一位以严苛著称的概率论教授。你只关心**形式正确性**：符号是否被重用、记号是否未定义就出现、σ-代数/可测性是否被忽略、regularity 条件（连续性、可微性、有界性）是否在使用前明确陈述、公式里是否有 typo 或维度不匹配。**不**考虑 claim 是否"直觉上对" —— 只看字面是否无懈可击。对每个 claim 返回 gap JSON；无问题则 `status: "verified"`。
+```
+Tier A — STRONG          ≥2 Claude personas + Codex agree, no refute
+Tier B — CROSS_VALIDATED 1 Claude + 1 Codex agree, OR ≥2 Claude only
+Tier C — SOLO            single source, other side did not critique
+Tier D — DISPUTED        surfaced + other side returned partial-uphold
+Tier E — RESIDUAL        surfaced + other side returned refute with concrete reason
+```
 
-### Persona B — Adversarial reviewer（对抗型）
-> 你是一位想让作者证明崩塌的审稿人。对每个 claim，主动构造**反例、极端情形、退化输入、极限 regime**，尝试让 claim 在某个边界上失败。典型攻击点：$n \to \infty$ 与 $d \to \infty$ 的次序、退化分布（常数、点质量、重尾）、trivial case（$n=1$、空集、零方差）、独立性被隐式假设的地方、concentration 不等式常数是否随维度爆炸。每个成功攻击记为一个 gap，`gap_type` 填"counterexample-*"，并在 `latex_patch` 中写出需要补入的条件。
+`synthesized.json` keeps A-D in tier+severity descending order. Tier E goes to `RESIDUAL.md` only (not silently dropped — user can re-promote on human review).
 
-### Persona C — Generous reviewer（补救型）
-> 你是一位同情作者、愿意把证明修好的同行。对每个看起来有 gap 的 claim，**给出让它成立所需的最小充分 regularity**，而不是直接打回。产出 `status: "missing_assumption"` 并在 `latex_patch` 中写出：(i) 应当添加到 Assumption block 的条件、(ii) 该条件为何是最小充分的一句话论证。
+---
 
-每个 persona 返回自己的 gap JSON 数组；三者之间不通信。
+## Phase 3 — Patch lint (mandatory before final report)
 
-## Phase 3 — Consolidation
+```bash
+python3 ~/.claude/skills/proof-audit/scripts/lint_patches.py \
+    --synthesized proof_audit/synthesized.json \
+    --paper-source main.tex appendix.tex \
+    --out proof_audit/lint_report.json
+```
 
-在主 agent 中合并三路输出：
+Three checks per `latex_patch`:
+1. `\hypertarget{...}` anchor inside the patch matches `finding.hypertarget_anchor`.
+2. Every `\ref{...}`, `\eqref{...}`, `\Cref{...}` referenced inside the patch points to a label that **actually exists** in the paper source. Hallucinated labels are dropped.
+3. `latexmk -draftmode` dry-run on a minimal wrapper containing the patch (skipped with `--no-latex`).
 
-1. **Dedupe**: 按 `(claim_id, gap_type)` 键去重。
-2. **Conflict resolution**:
-   - 若 ≥2 个 persona 在同一 `(claim_id, gap_type)` 上都报告了 gap → **保留**，`confidence` 取三者最大值。
-   - 若只有 1/3 persona 报告 → 保留但标记 `"low-confidence, human judgment needed"`，`confidence` 下调 0.3。
-   - 若同一 claim 被 Persona A 标 `symbol_abuse` 而 Persona C 标 `missing_assumption` → 合并为两条独立条目，不算冲突。
-3. **Rank**: 按 `severity` 降序，`confidence` 作为次序打破 tie。
+Plus one global check: `hypertarget_anchor` uniqueness across all findings.
 
-## Phase 4 — Fix plan output
+Findings that fail lint are demoted to `RESIDUAL.md` with the specific error; they do **not** go in the main report.
 
-在**当前工作目录**写 `THESIS_AUDIT.md`，结构如下：
+---
+
+## Phase 4 — Fix plan output (THESIS_AUDIT.md)
 
 ```markdown
 # Thesis Appendix Audit — <paper title>
@@ -96,70 +134,80 @@ Phase 1 的输出是一份完整的 claim 清单（ID + claim_text + preconditio
 | metric | count |
 |---|---|
 | total atomic claims | N |
-| verified | ... |
-| gap (any type) | ... |
-| worst severity | ... |
+| Tier A (STRONG)     | ... |
+| Tier B (CROSS_VALIDATED) | ... |
+| Tier C (SOLO)       | ... |
+| Tier D (DISPUTED)   | ... |
+| Tier E (RESIDUAL — see RESIDUAL.md) | ... |
+| canary pass rate    | k / 5 |
+| pdf_extraction_warning | yes/no |
 
-Gap breakdown by type: measurability=…, limit-exchange=…, iid-undeclared=…, ...
-
-## Quick action list (top 3–5 highest-impact fixes)
-1. **[C7, severity 5]** ...
+## Quick action list (top 5 from Tier A+B by severity)
+1. **[C7 / Tier A / severity 5 / DCT-no-dominating-function]** ...
 2. ...
 
-## Prioritized gap list
+## Prioritized findings (Tier A → D)
 
-### Gap on C3 — limit-exchange, severity 4, confidence 0.82
-**Claim excerpt**: > ...verbatim...
-**Gap**: 在把 $\lim_{n\to\infty}$ 与 $\mathbb{E}[\cdot]$ 交换时未核对 DCT 的 dominating 条件。
-**LaTeX patch** (insert before the exchange step in Appendix A.2):
+### [C3 / Tier A / severity 4 / limit-derivative-no-Leibniz]
+**Claim excerpt** (verbatim): > ...
+**Surfaced by**: pedantic, adversarial, codex-cross-model
+**Critique verdicts**: codex→claude=uphold, claude→codex=uphold
+**Gap**: 交换 $\partial_\theta$ 与 $\mathbb{E}$ 时未给 dominating function。
+**LaTeX patch** (insert before equation (A.7) in Appendix A.2):
 \`\`\`latex
-\hypertarget{gap_C3}{}%
-By Assumption A1(iii), $|f_n(X)| \le g(X)$ with $\mathbb{E}[g(X)] < \infty$, so the
-dominated convergence theorem applies and
-$$\lim_{n\to\infty} \mathbb{E}[f_n(X)] = \mathbb{E}\bigl[\lim_{n\to\infty} f_n(X)\bigr].$$
+\hypertarget{gap_C3_limit-derivative-no-Leibniz}{}%
+...
 \`\`\`
-**Insertion hint**: 紧接 "interchange limit and expectation" 那一行之前。
+**Lint**: all checks passed.
+
+(Tier D entries include `dispute summary: ...` line.)
+
+## Residual low-confidence items
+See RESIDUAL.md.
 ```
-
-**关键规则 — 每个 patch 必须携带 `\hypertarget{gap_<claim_id>}{}` 锚**，作为 backward-traceable ID，方便团队成员一眼从正文跳回审计报告。
-
-报告末尾追加一段 "Residual low-confidence items"，列出 1/3 persona 报告但未达成共识的条目，供人类判断。
 
 ## Format rules (hard)
 
-- 所有数学表达式使用 LaTeX：行内 `$...$`，行间 `$$...$$`。禁止把数学写成纯文本。
-- Markdown 用于结构；JSON schema / LaTeX 代码块保持英文。
-- 解释性散文用中文。
-- 不写 `scripts/` 目录 —— PDF 读取走 global CLAUDE.md 的 size-gated 规则（长/复杂 PDF 用 `cnai flash`，短 PDF 直接 `Read`），无需本地脚本。
+- All math expressions in LaTeX: inline `$...$`, display `$$...$$`. Never plain text.
+- Markdown for structure; JSON schema / LaTeX code blocks stay English.
+- Explanatory prose in Chinese.
+- Never write ad-hoc PDF reader scripts. PDF routing: see Phase 1 step 1.
 
 ## References
 
-- `references/common_proof_gaps.md` — 概率/统计证明中 ~50 个常见 gap 模式的 checklist，三个 persona 在审计时会参考此清单。
+- [`references/phase2_debate.md`](references/phase2_debate.md) — full 4-phase debate spec, persona briefs, tier classifier.
+- [`references/common_proof_gaps.md`](references/common_proof_gaps.md) — 52 gap-type checklist (1-to-1 with `schema/gap.schema.json` enum).
+- [`references/limits.md`](references/limits.md) — 10 classes of error the audit **cannot** catch. Read before claiming "no gaps."
+- [`schema/gap.schema.json`](schema/gap.schema.json) — strict OpenAI structured-output schema for persona findings.
+- [`schema/critique.schema.json`](schema/critique.schema.json) — strict schema for cross-critique.
+- [`canary/snippets.json`](canary/snippets.json) — 5 known-buggy minimal proofs.
+- [`canary/run_canary.sh`](canary/run_canary.sh) — preflight runner.
+- [`scripts/lint_patches.py`](scripts/lint_patches.py) — Phase 3 lint.
 
 ---
 
 ## Rate-chain mode (`/proof-audit --rate-chain`)
 
-当审计目标是**一条 composed big-O rate corollary**（例如 `thm:misclustering`、`cor:*-consistency`、`cor:*-rate`），而非单条 claim 的形式正确性时，启用本 mode。
+When the audit target is a **composed big-O rate corollary** (e.g. `thm:misclustering`, `cor:*-consistency`, `cor:*-rate`) rather than per-claim formal correctness, switch to this mode.
 
-本 mode 做 Phase 1–4 默认流程原理上做不到的事：**跨 10+ lemma 的代数合成**。Persona-based 切片审计看不到这种跨章节的 rate exponent 错位 —— 需要 sympy 级代数合成才能抓。
+This mode does what the default 4-phase pipeline cannot: **symbolic exponent-vector composition across 10+ lemmas**. Persona-based slice audit cannot see this kind of cross-section rate-exponent drift; deterministic exponent-vector composition catches it.
 
-### 触发
+### Trigger
 
-- `/proof-audit --rate-chain <paper.tex> <target-label>` — 显式指定目标 corollary。
-- 自然语言触发："check the rate composition"、"verify end-to-end rate"、"does cor X's rate match its proof chain"、"验证 rate 链合成"。
-- 反触发：一次性 bound、数值 benchmark、非 rate 型 corollary → 回退默认 Phase 1–4 claim-local 审计。
+- `/proof-audit --rate-chain <paper.tex> <target-label>` — explicit target corollary.
+- 自然语言: "check the rate composition", "verify end-to-end rate", "does cor X's rate match its proof chain", "验证 rate 链合成"。
+- 反触发: 一次性 bound、数值 benchmark、非 rate 型 corollary → 回退默认 Phase 1–4。
 
 ### 工作流 & 脚本
 
-本 mode 的完整工作流（Phase A 提取、Phase B 双盲 extractor、Phase B.2/B.4 一致性检查、Phase C sympy 代数合成、Phase D walked-vs-stated diff 报告）见 `modes/rate-chain/MODE.md`。关联脚本、schema、reference material、example runs 都在 `modes/rate-chain/` 子目录下：
+完整工作流（Phase A 提取、Phase B 双盲 extractor、Phase B.2/B.4 一致性检查、Phase C 确定性 exponent-vector 合成、Phase D walked-vs-stated diff 报告）见 [`modes/rate-chain/MODE.md`](modes/rate-chain/MODE.md)。关联脚本、schema、reference material、example runs 都在 `modes/rate-chain/` 子目录下：
 
 - `modes/rate-chain/MODE.md` — 完整 phase 说明
-- `modes/rate-chain/scripts/` — `compose.py` 等确定性脚本（sympy 代数合成）
+- `modes/rate-chain/scripts/` — `compose.py` 等确定性脚本
 - `modes/rate-chain/schema/` — rate-table JSON schema
 - `modes/rate-chain/references/` — rate-composition pattern 清单
 - `modes/rate-chain/example_runs/` — 历史运行样例
 
-### 跨模型冗余（替代已删除的 `rate-chain-audit-gpt`）
+### 跨模型冗余
 
-若需 Claude ↔ GPT 双盲交叉验证（原 `rate-chain-audit-gpt` 的功能），把 Phase B.1 的两个 extractor subagent 换成 `ocw run gpt`（GPT-5.5）调用，compose/diff 阶段仍走同一份 `modes/rate-chain/scripts/compose.py`。两轮输出 rate-table 若一致，合并置信度 ≈ 0.99；若有不一致，自动列为 flagged entry 交人类判断。
+Phase B.1 的两个 extractor subagent 可以换成 `codex exec --output-schema rate_table.schema.json -m gpt-5.5` 调用，compose/diff 阶段仍走同一份 `modes/rate-chain/scripts/compose.py`。两轮输出 rate-table 一致则合并置信度高；不一致则自动列为 flagged entry 交人类判断。
