@@ -156,6 +156,11 @@ After Phase 1 has produced `proof_audit/claims.json`, the per-round loop is:
 # Once per session: build per-claim packages (Phase β.1)
 python3 scripts/package_claims.py build --claims proof_audit/claims.json
 
+# Once per session: build per-section batches (Phase γ.2 — optional but recommended)
+python3 scripts/batch_claims.py build \
+    --manifest proof_audit/claim_packages/_manifest.json \
+    --out proof_audit/claim_batches.json
+
 # Once per session: bootstrap state (skip if already exists)
 python3 scripts/state.py init src/<manuscript>.tex
 # OR migrate from a v1 synthesized.json after the first round
@@ -213,6 +218,21 @@ python3 scripts/state.py prior proof_audit/prior_round_state.json --max 30
 
 ### `scripts/triage.py` — Tier L/S/O classifier (see Phase 2.5 above)
 
+### `scripts/batch_claims.py` — Group packages into Pedantic/Generous batches (Phase γ.2)
+
+Reduces N persona invocations to ~N/5 batched invocations by grouping packages from the same section. A typical osaa-sized paper (56 claims) batches into ~11 calls of ~5 claims each. The persona can ALSO spot cross-claim notation conflicts within a batch, which single-claim calls miss.
+
+```bash
+python3 scripts/batch_claims.py build \
+    --manifest proof_audit/claim_packages/_manifest.json \
+    --max-batch-claims 8 --max-batch-lines 1200 \
+    --out proof_audit/claim_batches.json
+
+python3 scripts/batch_claims.py show --batches proof_audit/claim_batches.json
+```
+
+Heuristics: group by `section_header`, keep `depends_on` chains together, cap each batch at `max_batch_claims` AND `max_batch_lines`. Adversarial is intentionally NOT batched (Route B sends it to codex instead — see Phase γ.1).
+
 ### `scripts/package_claims.py` — Per-claim pre-slicing (Phase β.1)
 
 Pre-slices the manuscript .tex into per-claim packages so subagents can read a 100-300 line window per claim instead of the full 4000+ line manuscript. Addresses the recurring socket-fail mode where the Adversarial persona dies after 9-15 Read tool calls (observed 4/4 times in the osaa case study).
@@ -235,6 +255,75 @@ python3 scripts/package_claims.py manifest --outdir proof_audit/claim_packages
 Each `claim_packages/{Cxx}.json` contains: `statement_text`, `proof_text`, `context_before_text`, `context_after_text`, `hypertargets[]`, `section_header`, `depends_on[]`, plus 1-indexed line ranges for traceability. The builder uses label-based anchoring (with full-file fallback when `claims.json` is stale relative to the current manuscript), and tracks `warnings[]` for any heuristic mismatches.
 
 `scripts/state.py prior --packages-dir proof_audit/claim_packages` injects a `package_path` into every active finding in `prior_round_state.json`. Persona prompts then read that small package directly (~150 lines) instead of opening the manuscript. **Validated on osaa: 22× token reduction per claim** (205 lines for C20 vs 4612-line manuscript).
+
+### `scripts/archive_audit.py` — LATEST_AUDIT.md + per-round archive (Phase δ.1)
+
+```bash
+# At end of round N, archive THESIS_AUDIT.md and refresh LATEST_AUDIT.md
+python3 scripts/archive_audit.py update --round N --source THESIS_AUDIT.md
+
+# Multi-file: also archive OPEN_PROBLEMS.md as a secondary in the same round
+python3 scripts/archive_audit.py update --round N \
+    --source THESIS_AUDIT.md --source OPEN_PROBLEMS.md
+
+# Inspect history
+python3 scripts/archive_audit.py list
+python3 scripts/archive_audit.py diff --round-a 5 --round-b 7 --file THESIS_AUDIT.md
+```
+
+Round N's audit is copied to `_archive/audits/round_N/THESIS_AUDIT.md` (with a `_meta.txt` recording timestamp + git commit). `LATEST_AUDIT.md` always points to the most recent primary source. Never overwrites a user-authored file in the project root — only manages `LATEST_AUDIT.md` and the `_archive/audits/` tree.
+
+### `scripts/open_problems.py` — Auto-generate OPEN_PROBLEMS.md (Phase δ.2)
+
+```bash
+python3 scripts/open_problems.py emit --state proof_audit/state.json \
+    --out OPEN_PROBLEMS.md \
+    --packages-dir proof_audit/claim_packages \
+    --include-deferred-human
+```
+
+Reads every Tier-O finding (and optionally `deferred_human` ones) from `state.json` and renders a markdown report with: index table sorted by severity, per-claim section with rationale + excerpt + last-5 fix attempts + "what would close this" auto-stub keyed off the gap_type bucket (scope-reduction → "narrow the statement", citation → "primary-source argument", open → "future paper", else → human judgment).
+
+### `scripts/anchor_audit.py` — Hypertarget audit + rename (Phase δ.4)
+
+After many rounds the manuscript accumulates 100+ `\hypertarget{gap_*}` anchors with inconsistent naming (`gap_C##v##_short` vs `gap_C##_major_short` vs `gap_C##_d#_short`). This tool inspects + renames safely.
+
+```bash
+# Audit anchors: counts, duplicates, orphans, style distribution per claim
+python3 scripts/anchor_audit.py inspect --manuscript src/paper.tex \
+    --out proof_audit/anchor_report.json
+
+# Rename via a curated map; idempotent + collision-detecting + dry-run-able
+echo '{"gap_C1v3_old": "gap_C1_canonical"}' > rename_map.json
+python3 scripts/anchor_audit.py rename --manuscript src/paper.tex \
+    --map rename_map.json --dry-run --strict
+python3 scripts/anchor_audit.py rename --manuscript src/paper.tex \
+    --map rename_map.json
+```
+
+Idempotency: re-running an already-applied rename is a 0-replacement no-op (not an error). Collisions: erroring out before write if a rename target already exists in the file. Replacements happen inside both `\hypertarget{X}` (definitions) and `\hyperlink{X}` (references).
+
+### `scripts/proof_audit.py` — Unified entry point (Phase δ.3)
+
+```bash
+# Bootstrap a fresh proof_audit/ directory (packages + state)
+python3 scripts/proof_audit.py init --manuscript src/paper.tex
+
+# Per-round operations
+python3 scripts/proof_audit.py triage --findings X.json --round N
+python3 scripts/proof_audit.py verdict --commit
+python3 scripts/proof_audit.py metrics
+python3 scripts/proof_audit.py prior
+
+# End-of-round housekeeping
+python3 scripts/proof_audit.py archive --round N --source THESIS_AUDIT.md
+python3 scripts/proof_audit.py open-problems
+
+# Re-emit reports without re-running any LLM step (after a manual state edit)
+python3 scripts/proof_audit.py replay
+```
+
+Thin wrapper over the per-task scripts; delegates to the underlying module via `subprocess`. All flags after the recognized ones pass through verbatim. The heavy LLM steps (Phase 2 personas, Phase 2b codex, Phase 2c critique) still need orchestration in the user's session — `proof_audit.py` covers every deterministic Python step in the round flow.
 
 ### `scripts/metrics.py` — Per-round dashboard (Phase β.3)
 
@@ -278,17 +367,23 @@ Decision writes back to `state.json`'s `iteration_status` field if `--commit-dec
 python3 ~/.claude/skills/proof-audit/scripts/lint_patches.py \
     --synthesized proof_audit/synthesized.json \
     --paper-source main.tex appendix.tex \
+    --packages-dir proof_audit/claim_packages \
     --out proof_audit/lint_report.json
 ```
 
-Three checks per `latex_patch`:
+Seven checks per `latex_patch`:
 1. `\hypertarget{...}` anchor inside the patch matches `finding.hypertarget_anchor`.
 2. Every `\ref{...}`, `\eqref{...}`, `\Cref{...}` referenced inside the patch points to a label that **actually exists** in the paper source. Hallucinated labels are dropped.
 3. `latexmk -draftmode` dry-run on a minimal wrapper containing the patch (skipped with `--no-latex`).
+4. **(Phase γ.3) Macro existence**: every non-standard `\macro` in the patch must be defined somewhere via `\newcommand`/`\def`/`\DeclareMathOperator`, or be in the AMS / built-in allowlist. Catches Codex inventing names like `\hatQ`. Emits *warning*, not error.
+5. **(Phase γ.3) Downstream impact**: if the patch contains `\newcommand` redefining a macro, scan `claim_packages/` for other claims that reference the same symbol — emit a warning listing affected claims so the patcher can decide whether to globalize the change.
+6. **(Phase γ.3) Semantic conflict**: heuristic regex over patch + paper Assumption blocks looking for opposite regime tokens applied to the same symbol (e.g., patch says `K is fixed`, paper says `K \to \infty`). Emits *warning*, not error — false-positive rate is non-trivial, treat as a flag for human review.
 
 Plus one global check: `hypertarget_anchor` uniqueness across all findings.
 
-Findings that fail lint are demoted to `RESIDUAL.md` with the specific error; they do **not** go in the main report.
+Findings that fail lint (errors, not warnings) are demoted to `RESIDUAL.md` with the specific error; they do **not** go in the main report. Findings with warnings only are kept in the main report but have the warnings appended to their entry so the patcher sees them.
+
+Skip the new γ.3 checks individually with `--no-macro-check / --no-downstream / --no-semantic` — useful for fast iteration.
 
 ---
 

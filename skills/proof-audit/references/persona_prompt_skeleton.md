@@ -50,6 +50,8 @@ gap_type="none", severity=0.
 
 ## Pedantic persona
 
+### Single-claim invocation (one persona call per claim)
+
 ```
 {shared preamble above}
 
@@ -72,14 +74,68 @@ one finding with status="verified", gap_type="none", severity=0.
 Write to: proof_audit/findings_claude_pedantic.json
 ```
 
----
+### Batched invocation (Phase γ.2 — recommended)
 
-## Adversarial persona
+When `proof_audit/claim_batches.json` exists, dispatch ONE Pedantic call per
+batch instead of per claim. A typical osaa-sized paper (56 claims) batches
+into ~11 calls, each covering ~5 related claims under the same section.
 
 ```
 {shared preamble above}
 
-# Persona — Adversarial
+# Persona — Pedantic (batched)
+
+You will audit a BATCH of related claims this round. The batch lives at
+proof_audit/claim_batches.json under batch_id "{B0X}". Read that batch entry
+to get the list of claim_ids and their package paths.
+
+For EACH claim in the batch:
+  1. Read its package proof_audit/claim_packages/{Cxx}.json
+  2. Apply the Pedantic brief above (notation, σ-algebra, regularity, typos)
+  3. ADDITIONALLY: cross-check with siblings in the batch — flag any
+     symbol/notation conflict between claims in the same batch (this is a
+     batched-invocation bonus that single-claim calls cannot catch)
+
+For each finding, set the source field to "claude-pedantic" (NOT "batch-Bxx" —
+the batch_id is metadata only and should NOT pollute the source attribution).
+
+Output: ONE JSON file per batch:
+  proof_audit/findings_claude_pedantic_{batch_id}.json
+
+The Phase 2d synthesizer expects all per-batch outputs to be merged
+post-hoc. Use scripts/merge_findings.py if needed (TBD), or simply
+concatenate the findings arrays — the synthesizer dedupes by
+(claim_id, gap_type, source).
+```
+
+The Generous persona supports the same single-vs-batched split with the
+analogous template. The Adversarial persona is best left UN-batched — its
+attack-style reasoning benefits from focused per-claim attention, and the
+codex routing in Route B already parallelizes that work.
+
+---
+
+## Adversarial persona — TWO ROUTES
+
+The Adversarial brief was the most expensive and the most failure-prone in
+the osaa case study (4/4 socket-fails after 9-15 Read calls). Phase γ.1
+introduces a routing choice:
+
+- **Route A (default, when packages are available)**: keep as a Claude
+  subagent, with the access protocol in front. Most failures came from
+  reading the full tex; with packages, the Claude subagent should be stable.
+- **Route B (recommended fallback when Route A still flakes)**: dispatch the
+  same brief to `codex exec`. Codex handles "look at every claim and try to
+  break it" workloads more cheaply and without subagent socket fragility.
+
+The brief itself is identical. Only the dispatch differs.
+
+### Route A — Claude subagent
+
+```
+{shared preamble above}
+
+# Persona — Adversarial (Claude subagent)
 
 You are a hostile reviewer trying to collapse the proof. Construct
 counterexamples, extreme regimes, degenerate inputs, limit boundaries.
@@ -101,6 +157,55 @@ that must be added to the Assumption block.
 
 Write to: proof_audit/findings_claude_adversarial.json
 ```
+
+### Route B — codex-adversarial (Phase γ.1 routing)
+
+When Route A fails repeatedly (>=2 socket errors or >=2 timeout retries on a
+single round), or when the Adversarial pass is the last persona blocking
+round completion, switch to codex.
+
+```bash
+codex exec \
+  --skip-git-repo-check \
+  --sandbox read-only \
+  --output-schema ~/.claude/skills/proof-audit/schema/gap.schema.json \
+  --output-last-message proof_audit/findings_codex_adversarial.json \
+  -m gpt-5.5 \
+  -c model_reasoning_effort=xhigh \
+  < phase2a_adversarial_codex_prompt.txt
+```
+
+Contents of `phase2a_adversarial_codex_prompt.txt`:
+
+```
+{shared preamble above — codex sees claims.json + claim_packages/ as attachments}
+
+# Persona — codex-adversarial
+
+You are a hostile reviewer trying to collapse the proof. (Same brief as
+Route A above.) You are operating as a SECOND independent codex instance —
+the codex.neutral instance (Phase 2b) is operating in parallel and you do
+NOT see its findings. This preserves error independence between the two
+codex passes: neutral surveys for plausible gaps, you actively attack.
+
+For each claim in claims.json:
+  - Read the corresponding package in claim_packages/
+  - Construct one or more concrete attacks (regime, distribution,
+    dimensional ordering)
+  - Surface findings with gap_type chosen from the enum, severity reflecting
+    how decisively the attack would break the claim, and a latex_patch that
+    states the exact condition that must be added to fix it
+  - Use status="verified" only if you actively tried and failed to attack
+
+Output: one JSON file conforming to schema/gap.schema.json with claim_audit_count
+equal to len(claims). Tag every finding with sources=["codex-adversarial"]
+so the synthesizer can distinguish you from codex-neutral.
+```
+
+After Route B, Phase 2c needs one tweak: the cross-critique now runs
+`codex.neutral` and `codex.adversarial` against `claude.pedantic` and
+`claude.generous`, and Claude critiques both codex outputs. The schema is
+unchanged; only the source-attribution string changes.
 
 ---
 

@@ -68,6 +68,21 @@ Same three personas as before, **but with corrected briefs**. Run in main thread
 
 Each persona produces **one** JSON file conforming to `schema/gap.schema.json`. One persona may emit **multiple findings per claim** if multiple distinct issues exist. `claim_audit_count` must equal `len(claims)`.
 
+### Adversarial routing (Phase γ.1)
+
+The Adversarial brief was the most failure-prone in the osaa case study (4/4 socket-fails after 9-15 Read calls). Phase β.1's claim packaging removed the *cause* (large-tex Read loops), but the brief itself remains the most expensive — for every claim it must construct an attack, which scales worst.
+
+Routing rule:
+
+| Condition | Route |
+|---|---|
+| `claim_packages/` exist AND no prior socket-fail this session | **Route A**: Claude subagent (default) |
+| Route A produced ≥2 socket errors / timeout retries on a single round | **Route B**: dispatch Adversarial brief to a SECOND `codex exec` invocation (`codex.adversarial`), in addition to the existing `codex.neutral` (Phase 2b) |
+
+Both routes use the identical brief; only the dispatch differs. See `persona_prompt_skeleton.md` for the codex-adversarial prompt template.
+
+When Route B is used, Phase 2c critique pairs become **Claude critiques (codex.neutral ∪ codex.adversarial)** and **codex critiques (Pedantic ∪ Generous)**. The synthesis tier table (below) treats `codex.neutral` and `codex.adversarial` as two independent codex sources — agreement between them counts the same as agreement between two Claude personas.
+
 ---
 
 ## Phase 2b — Codex cross-model (one persona, true cross-model)
