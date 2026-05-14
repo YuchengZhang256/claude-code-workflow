@@ -13,6 +13,11 @@ This document specifies the **new** Phase 2 design that replaces the old "3 pers
 ```
 <cwd>/proof_audit/
 ├── claims.json                          # from Phase 1
+├── claim_packages/                      # NEW (Phase β.1) — pre-sliced per-claim windows
+│   ├── _manifest.json
+│   ├── C1.json
+│   └── ...
+├── prior_round_state.json               # NEW (Phase α) — required input for rounds ≥ 2
 ├── findings_claude_pedantic.json        # 2a
 ├── findings_claude_adversarial.json     # 2a
 ├── findings_claude_generous.json        # 2a
@@ -27,9 +32,25 @@ All `findings_*.json` validate against `schema/gap.schema.json`. All `critiques_
 
 ---
 
+## Manuscript access protocol (mandatory preamble for ALL persona prompts)
+
+**Every persona prompt — Pedantic, Adversarial, Generous, codex cross-model — MUST begin with this access protocol.** It eliminates the "subagent dies after 9-15 Read calls on a 4000-line tex" failure mode (observed 4/4 in osaa case study).
+
+> **How to read the manuscript.** Do NOT open the full `.tex` file. For each claim in `claims.json`, the per-claim window has been pre-sliced into `proof_audit/claim_packages/{claim_id}.json`. That file contains `statement_text`, `proof_text`, `context_before_text`, `context_after_text`, `hypertargets[]`, `section_header`, and `depends_on[]`. **Read that one file** for each claim you audit (typical size ≈150 lines). Only fall back to the full `.tex` if the package's `warnings[]` field reports a stale anchor.
+>
+> **How to use prior context (rounds ≥ 2).** Before flagging any finding, check `proof_audit/prior_round_state.json`. Each entry there has been raised in a previous round; many include a `package_path` that resolves to the same package files above. If you would re-flag the same `(claim_label, gap_type)` pair, you MUST (a) acknowledge the prior fix attempts in your `reasoning` field, (b) explain why the prior fix is insufficient with a concrete pointer (line, equation, missing condition), and (c) propose a CONCRETELY DIFFERENT approach — not a re-phrasing. If you cannot satisfy (b) and (c), DO NOT re-flag.
+>
+> **Cross-claim references.** When a claim's `depends_on[]` lists another claim id, you may also `Read proof_audit/claim_packages/{dep_id}.json` to consult the dependency's statement.
+
+This block belongs verbatim above each persona's role-specific brief in the prompt body.
+
+---
+
 ## Phase 2a — Three Claude personas (local)
 
 Same three personas as before, **but with corrected briefs**. Run in main thread when `len(claims) < 5` or `appendix_tokens < 10k`; otherwise dispatch three parallel `Agent` subagents.
+
+**Important**: prepend the *Manuscript access protocol* (above) to every persona prompt before the role-specific brief. Without it, subagents will try to Read the full .tex and will hit the socket-fail loop after 9-15 calls.
 
 ### Pedantic brief (corrected)
 

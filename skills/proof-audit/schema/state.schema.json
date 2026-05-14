@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "proof-audit cross-round state",
+  "description": "Durable state across audit rounds. Maintains finding lifecycles, fix attempts, and convergence signals so each round inherits prior context instead of cold-starting.",
+  "type": "object",
+  "required": ["schema_version", "manuscript", "current_round", "iteration_status", "findings"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "manuscript": { "type": "string", "description": "Path to the audited .tex file" },
+    "first_audit_date": { "type": "string", "format": "date-time" },
+    "last_audit_date": { "type": "string", "format": "date-time" },
+    "current_round": { "type": "integer", "minimum": 1 },
+    "iteration_status": {
+      "enum": ["initialized", "iterating", "converged", "stuck_on_recurring", "escalated_to_human"],
+      "description": "Set by convergence engine after each round"
+    },
+    "stop_recommendation": {
+      "type": "string",
+      "description": "Human-readable explanation when iteration_status != iterating"
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/finding" }
+    },
+    "round_metrics": {
+      "type": "array",
+      "description": "Per-round summary metrics (one entry per round)",
+      "items": { "$ref": "#/definitions/round_metric" }
+    },
+    "open_problems": {
+      "type": "array",
+      "description": "Tier-O findings escalated to OPEN_PROBLEMS.md",
+      "items": { "$ref": "#/definitions/finding" }
+    }
+  },
+  "definitions": {
+    "finding": {
+      "type": "object",
+      "required": ["finding_id", "claim_label", "gap_type", "first_round", "lifecycle_status"],
+      "properties": {
+        "finding_id": { "type": "string", "pattern": "^F[0-9]+$" },
+        "claim_label": { "type": "string", "description": "e.g. lem:init-pop" },
+        "claim_id": { "type": "string", "description": "stable across rounds, e.g. C25" },
+        "gap_type": { "type": "string", "description": "from gap.schema.json enum" },
+        "first_round": { "type": "integer" },
+        "last_round": { "type": "integer" },
+        "rounds_flagged": {
+          "type": "array",
+          "items": { "type": "integer" },
+          "description": "All round numbers in which this finding was surfaced"
+        },
+        "first_severity": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "current_severity": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "max_severity": { "type": "integer", "minimum": 0, "maximum": 5 },
+        "current_tier": { "enum": ["L", "S", "O", "unclassified"] },
+        "tier_history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "round": { "type": "integer" },
+              "tier": { "enum": ["L", "S", "O"] },
+              "rationale": { "type": "string" }
+            }
+          }
+        },
+        "fix_attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["round", "approach"],
+            "properties": {
+              "round": { "type": "integer" },
+              "commit": { "type": "string", "description": "git commit short hash if known" },
+              "anchor": { "type": "string", "description": "hypertarget anchor of the patch" },
+              "approach": { "type": "string", "description": "1-line summary of the fix approach" },
+              "outcome": { "enum": ["resolved", "regressed", "partial", "still_flagged"] }
+            }
+          }
+        },
+        "lifecycle_status": {
+          "enum": ["open", "closed", "open_problem", "stable_recurring", "deferred_human"],
+          "description": "open: still iterating; closed: not flagged 2+ consecutive rounds; open_problem: Tier O; stable_recurring: ≥3 rounds same finding; deferred_human: needs human judgment"
+        },
+        "sources": {
+          "type": "array",
+          "items": { "enum": ["pedantic", "adversarial", "generous", "codex", "user"] }
+        },
+        "excerpt": { "type": "string", "description": "verbatim quote ≤200 chars from latest flagging" },
+        "recurring_round_count": { "type": "integer", "description": "Auto-derived from rounds_flagged length" },
+        "notes": { "type": "string", "description": "Free-text notes for human" }
+      }
+    },
+    "round_metric": {
+      "type": "object",
+      "required": ["round", "date"],
+      "properties": {
+        "round": { "type": "integer" },
+        "date": { "type": "string", "format": "date-time" },
+        "commit": { "type": "string" },
+        "total_findings": { "type": "integer" },
+        "new_findings": { "type": "integer", "description": "First-time-surfaced this round" },
+        "recurring_findings": { "type": "integer" },
+        "closed_findings": { "type": "integer", "description": "Marked closed this round" },
+        "tier_distribution": {
+          "type": "object",
+          "properties": {
+            "L": { "type": "integer" },
+            "S": { "type": "integer" },
+            "O": { "type": "integer" }
+          }
+        },
+        "severity_distribution": {
+          "type": "object",
+          "properties": {
+            "sev1": { "type": "integer" },
+            "sev2": { "type": "integer" },
+            "sev3": { "type": "integer" },
+            "sev4": { "type": "integer" },
+            "sev5": { "type": "integer" }
+          }
+        },
+        "new_sev4_plus": { "type": "integer", "description": "NEW (not recurring) sev>=4 this round" },
+        "convergence_decision": {
+          "enum": ["CONTINUE", "STOP_CONVERGED", "STOP_STUCK", "PAUSE_HUMAN"]
+        },
+        "convergence_rationale": { "type": "string" }
+      }
+    }
+  }
+}

@@ -26,6 +26,7 @@ description: "Audit math/stat proof rigor via 4-phase Claude+Codex debate; produ
 ```
 <cwd>/
 └── proof_audit/
+    ├── state.json                           # Cross-round durable state (Phase α, NEW)
     ├── claims.json                          # Phase 1
     ├── findings_claude_pedantic.json        # Phase 2a
     ├── findings_claude_adversarial.json     # Phase 2a
@@ -34,9 +35,13 @@ description: "Audit math/stat proof rigor via 4-phase Claude+Codex debate; produ
     ├── critiques_claude_on_codex.json       # Phase 2c-i
     ├── critiques_codex_on_claude.json       # Phase 2c-ii
     ├── synthesized.json                     # Phase 2d
+    ├── classified.json                      # Phase 2d.5 (NEW): tier L/S/O per finding
+    ├── prior_round_state.json               # Round-N entry: prior context for personas
+    ├── round_metric.json                    # Round-N output: metrics + convergence decision
     ├── lint_report.json                     # Phase 3 (patch lint)
     └── RESIDUAL.md                          # Phase 2d Tier-E findings
 └── THESIS_AUDIT.md                          # Phase 4 (main deliverable)
+└── OPEN_PROBLEMS.md                         # Tier-O findings (NEW)
 ```
 
 ---
@@ -80,7 +85,9 @@ Output: `proof_audit/claims.json`. This is **read-only context** for Phase 2.
 
 ## Phase 2 — Multi-source debate audit
 
-Replaces the old "3-persona ensemble + magic confidence merge" design. Four sub-phases, two Claude-side and two Codex-side. Full spec in [`references/phase2_debate.md`](references/phase2_debate.md); high-level recap below.
+Replaces the old "3-persona ensemble + magic confidence merge" design. Four sub-phases, two Claude-side and two Codex-side. Full spec in [`references/phase2_debate.md`](references/phase2_debate.md); copy-paste prompt skeletons in [`references/persona_prompt_skeleton.md`](references/persona_prompt_skeleton.md); high-level recap below.
+
+**Mandatory preamble** for every persona prompt (Pedantic / Adversarial / Generous / codex): the *Manuscript access protocol* in `phase2_debate.md`. It tells the persona to read `claim_packages/{Cxx}.json` instead of opening the full manuscript. Without this, subagents hit the socket-fail loop after 9-15 Read calls (observed 4/4 in osaa).
 
 | Sub-phase | Side | Action |
 |---|---|---|
@@ -102,6 +109,166 @@ Tier E — RESIDUAL        surfaced + other side returned refute with concrete r
 ```
 
 `synthesized.json` keeps A-D in tier+severity descending order. Tier E goes to `RESIDUAL.md` only (not silently dropped — user can re-promote on human review).
+
+---
+
+## Phase 2.5 — Triage classification (NEW: Phase α addition)
+
+Each finding from Tier A-D is further classified into **L / S / O** by `scripts/triage.py`. This separates concerns into three qualitatively different handling paths:
+
+| Tier | Meaning | Routing |
+|---|---|---|
+| **L** Logical bug | Fixable by ≤30 lines of LaTeX without changing model assumptions | Auto-fix queue (Phase 6, codex apply) |
+| **S** Style/citation/exposition | Fixable by single-pass human review (citation, wording, notation) | Queue to LATEST_AUDIT.md "human review" section |
+| **O** Open problem | Requires new mathematical theorem / scope reduction | Archive to OPEN_PROBLEMS.md |
+
+```bash
+python3 ~/.claude/skills/proof-audit/scripts/triage.py classify \
+    proof_audit/findings_v<N>.json \
+    --state proof_audit/state.json \
+    --out proof_audit/classified.json
+```
+
+Hard rules (first-match wins, ordered):
+1. **claim-level recurring ≥3 rounds** → Tier S (concept re-discovered under different framings; iteration unlikely to help).
+2. **gap_type ∈ open-problem catalog** → Tier O.
+3. **issue text contains "open"/"requires new"** → Tier O.
+4. **citation-strength concerns** → Tier S.
+5. **scope/closure concerns at sev≥4** → Tier O; at sev≤3 → Tier S.
+6. **gap_type ∈ logical-bug catalog with severity≥3** → Tier L.
+7. Default by severity + patch size.
+
+See `python3 scripts/triage.py rules` for the full catalog.
+
+**Empirical validation (osaa_ultrasparse_refinement.tex 11-round replay)**: with triage active from round 1, the auto-fix loop converges at round 7 instead of round 11 (4 rounds saved). LLV citation concerns auto-promote to Tier S after 3 rounds; DCSBM closure auto-promotes to Tier O.
+
+---
+
+## Phase α + β subsystem — Cross-round memory, convergence & dashboard
+
+Five CLI tools introduced together (Phase α: state/triage/convergence; Phase β: package_claims, metrics).
+
+### End-to-end round flow (canonical sequence)
+
+After Phase 1 has produced `proof_audit/claims.json`, the per-round loop is:
+
+```bash
+# Once per session: build per-claim packages (Phase β.1)
+python3 scripts/package_claims.py build --claims proof_audit/claims.json
+
+# Once per session: bootstrap state (skip if already exists)
+python3 scripts/state.py init src/<manuscript>.tex
+# OR migrate from a v1 synthesized.json after the first round
+# python3 scripts/state.py migrate proof_audit/synthesized.json src/<manuscript>.tex --round 1
+
+# --- per-round loop ---
+# (Phase 2 — see persona_prompt_skeleton.md for prompt templates)
+#   personas read proof_audit/prior_round_state.json + claim_packages/{Cxx}.json
+#   they emit findings_*.json and critiques_*.json into proof_audit/
+
+# Phase 2d: synthesize tiers (existing pipeline) -> proof_audit/synthesized.json
+# Phase 2.5: triage classify -> findings_classified.json
+python3 scripts/triage.py classify proof_audit/findings_classified_input.json \
+    --state proof_audit/state.json --out proof_audit/findings_classified.json
+python3 scripts/triage.py update-state \
+    --state proof_audit/state.json --round N \
+    proof_audit/findings_classified.json
+
+# Compute & commit round metric
+python3 scripts/convergence.py compute --state proof_audit/state.json \
+    --round N --out proof_audit/round_N_metric.json
+python3 scripts/state.py round proof_audit/round_N_metric.json
+
+# Decide whether to keep iterating
+python3 scripts/convergence.py decide --state proof_audit/state.json --commit-decision
+
+# Look at the dashboard before deciding the next move
+python3 scripts/metrics.py --state proof_audit/state.json show
+
+# Emit prior context for round N+1 (with package paths attached)
+python3 scripts/state.py prior proof_audit/prior_round_state.json \
+    --packages-dir proof_audit/claim_packages
+# --- end loop ---
+```
+
+Three independent CLI tools (introduced in Phase α):
+
+### `scripts/state.py` — Durable cross-round state
+
+Maintains `proof_audit/state.json` (schema v2, see `schema/state.schema.json`) with per-finding lifecycle: `first_round → fix_attempts → closed | open_problem | stable_recurring`. Critical for preventing the "codex re-discovers same concern across 6 rounds" failure mode observed in the osaa case study.
+
+```bash
+# Init at start of session
+python3 scripts/state.py init <manuscript.tex>
+
+# Bootstrap from existing v1 synthesized.json (one-time migration)
+python3 scripts/state.py migrate proof_audit/synthesized.json <manuscript.tex> --round 1
+
+# Each new round: ingest findings + emit prior context for next round's prompts
+python3 scripts/state.py update-finding <findings.json>
+python3 scripts/state.py prior proof_audit/prior_round_state.json --max 30
+```
+
+`prior_round_state.json` is **mandatory input** to all Phase 2 personas / codex prompts in rounds ≥ 2. Each entry includes `claim_level_recurring_count`, `prior_fix_attempts` (last 3), and explicit instructions: *if you would re-flag this concern, you MUST acknowledge prior fixes and propose a CONCRETELY DIFFERENT approach, not a re-phrasing.*
+
+### `scripts/triage.py` — Tier L/S/O classifier (see Phase 2.5 above)
+
+### `scripts/package_claims.py` — Per-claim pre-slicing (Phase β.1)
+
+Pre-slices the manuscript .tex into per-claim packages so subagents can read a 100-300 line window per claim instead of the full 4000+ line manuscript. Addresses the recurring socket-fail mode where the Adversarial persona dies after 9-15 Read tool calls (observed 4/4 times in the osaa case study).
+
+```bash
+# Build all packages from claims.json
+python3 scripts/package_claims.py build \
+    --claims proof_audit/claims.json \
+    --outdir proof_audit/claim_packages \
+    --context-lines 50
+
+# Inspect one package (debugging)
+python3 scripts/package_claims.py inspect \
+    --package proof_audit/claim_packages/C20.json --show-text
+
+# Print manifest table
+python3 scripts/package_claims.py manifest --outdir proof_audit/claim_packages
+```
+
+Each `claim_packages/{Cxx}.json` contains: `statement_text`, `proof_text`, `context_before_text`, `context_after_text`, `hypertargets[]`, `section_header`, `depends_on[]`, plus 1-indexed line ranges for traceability. The builder uses label-based anchoring (with full-file fallback when `claims.json` is stale relative to the current manuscript), and tracks `warnings[]` for any heuristic mismatches.
+
+`scripts/state.py prior --packages-dir proof_audit/claim_packages` injects a `package_path` into every active finding in `prior_round_state.json`. Persona prompts then read that small package directly (~150 lines) instead of opening the manuscript. **Validated on osaa: 22× token reduction per claim** (205 lines for C20 vs 4612-line manuscript).
+
+### `scripts/metrics.py` — Per-round dashboard (Phase β.3)
+
+```bash
+# ASCII tables to stdout (after-round triage)
+python3 scripts/metrics.py --state proof_audit/state.json show
+
+# Markdown report (drops into project root or proof_audit/)
+python3 scripts/metrics.py --state proof_audit/state.json report --out proof_audit/metrics_report.md
+
+# Machine-readable summary
+python3 scripts/metrics.py --state proof_audit/state.json json --out proof_audit/metrics.json
+```
+
+Five blocks per snapshot: round trajectory (one row per round, with `openL` Tier-L backlog and `ΔL` round-over-round delta), lifecycle counts, Tier-L pending backlog table (the actual auto-fix work), source breakdown across open findings, and a convergence preview that runs `convergence.py decide` read-only against the current state. The convergence preview lets you see *what the engine would decide right now* before running it with `--commit-decision`.
+
+### `scripts/convergence.py` — Auto-stop decision engine
+
+```bash
+# Compute round-N metric (tier-aware, includes open Tier-L backlog)
+python3 scripts/convergence.py compute --state state.json --round N --out round_metric.json
+
+# Decide whether to continue iteration
+python3 scripts/convergence.py decide --state state.json --commit-decision
+```
+
+Decision rules (deterministic, ordered):
+- **R1 STOP_STUCK** at hard cap (default 12 rounds).
+- **R2 STOP_STUCK** if 3 consecutive rounds with 0 new actionable Tier-L sev≥4 AND stable-recurring open. Iteration is spinning on style.
+- **R3 STOP_CONVERGED** if no open Tier-L pending AND no new sev≥4 this round. Auto-fix backlog drained.
+- **R4 PAUSE_HUMAN** if persona false-positive rate > 0.6.
+- **R5/R6** stay-converged or default-continue.
+
+Decision writes back to `state.json`'s `iteration_status` field if `--commit-decision`.
 
 ---
 
@@ -183,6 +350,10 @@ See RESIDUAL.md.
 - [`canary/snippets.json`](canary/snippets.json) — 5 known-buggy minimal proofs.
 - [`canary/run_canary.sh`](canary/run_canary.sh) — preflight runner.
 - [`scripts/lint_patches.py`](scripts/lint_patches.py) — Phase 3 lint.
+- [`scripts/state.py`](scripts/state.py) — Phase α: cross-round durable state.
+- [`scripts/triage.py`](scripts/triage.py) — Phase α: Tier L/S/O classifier.
+- [`scripts/convergence.py`](scripts/convergence.py) — Phase α: auto-stop decision engine.
+- [`schema/state.schema.json`](schema/state.schema.json) — Phase α: state.json schema v2.
 
 ---
 
