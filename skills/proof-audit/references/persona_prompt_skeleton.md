@@ -33,6 +33,21 @@ For each claim {Cxx}:
   4. Only fall back to the full manuscript .tex when the package's warnings[]
      field reports a stale anchor — write that fact in your finding's reasoning
 
+## latex_patch convention (MANDATORY when status != "verified")
+
+Every non-verified finding MUST include a `latex_patch` that begins with
+`\hypertarget{<hypertarget_anchor>}{}%` on its own line, using the EXACT
+string you put in the finding's `hypertarget_anchor` field. This makes the
+patch site traceable. Example:
+
+    "hypertarget_anchor": "gap_C19_missing_assumption",
+    "latex_patch": "\\hypertarget{gap_C19_missing_assumption}{}%\n... fix content ..."
+
+The host-side `lint_patches.py` rejects patches that violate this convention
+(downgrades them to RESIDUAL.md). Also: every `\ref`/`\eqref`/`\Cref` in the
+patch must point to a label that already exists in the paper sources;
+hallucinated labels are also rejected.
+
 For rounds ≥ 2:
   - Read proof_audit/prior_round_state.json
   - For every entry there with claim_label matching a claim you intend to flag:

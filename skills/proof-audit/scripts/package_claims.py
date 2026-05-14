@@ -86,6 +86,20 @@ RE_SECTION = re.compile(r"\\(section|subsection|subsubsection|paragraph)\*?\{([^
 RE_PROOF_BEGIN = re.compile(r"\\begin\{proof\}")
 RE_PROOF_END = re.compile(r"\\end\{proof\}")
 
+# Phase β.1.1 — auto-extract depends_on by scanning \ref / \eqref / \Cref /
+# \cref inside the statement+proof text. Useful when claims.json (e.g. from
+# auto-extraction) doesn't supply depends_on. Matches labels like
+# `lem:foo`, `thm:bar`, `prop:baz`, `cor:qux`, `def:spam`, `ass:eggs`,
+# `eq:something`, `fact:x`, `assu:y`. Excludes section/subsection/figure
+# refs (sec:, fig:, tab:, alg:) which are not claims.
+RE_REF = re.compile(
+    r"\\(?:ref|eqref|Cref|cref|autoref)\{([^}]+)\}"
+)
+CLAIM_LABEL_PREFIXES = (
+    "lem:", "thm:", "prop:", "cor:", "def:",
+    "ass:", "assu:", "fact:", "rem:", "claim:",
+)
+
 
 # ---------------------------------------------------------------------------
 # Environment matching with proper nesting
@@ -187,14 +201,23 @@ def find_proof_after(lines: List[str], stmt_end_idx: int,
 
 
 def find_section_header(lines: List[str], before_idx: int,
-                        max_walk: int = 500) -> Optional[str]:
+                        max_walk: int = 1500) -> Optional[str]:
     """Walk backward from `before_idx` to find the most recent section header.
     Returns the raw line text, or None if none found within `max_walk` lines.
+
+    The default 1500-line walk covers the worst case in practice: a long
+    appendix section with many lemmas (osaa case study had a 504-line gap
+    between the section header and one of its lemmas). Scanning lines is
+    cheap — bump this if you encounter a paper with sections > 1500 lines.
     """
     lo = max(0, before_idx - max_walk)
     for i in range(before_idx, lo - 1, -1):
-        if RE_SECTION.search(lines[i]):
-            return lines[i].rstrip("\n")
+        m = RE_SECTION.search(lines[i])
+        if m:
+            # Return only the matched \section{...} / \paragraph{...} invocation,
+            # NOT the full line. Important for inline \paragraph{Foo.} bodies that
+            # would otherwise pollute the section_header field with body math.
+            return m.group(0).rstrip()
     return None
 
 
@@ -205,6 +228,34 @@ def collect_hypertargets(lines: List[str], start_idx: int, end_idx: int) -> List
         for m in RE_HYPER.finditer(lines[i]):
             names.append(m.group(1))
     return names
+
+
+def collect_referenced_claim_labels(
+    lines: List[str], start_idx: int, end_idx: int,
+    self_label: str = "",
+) -> List[str]:
+    """Phase β.1.1 — scan \\ref/\\eqref/\\Cref/\\cref inside the span and
+    return labels that look like claim labels (lem:/thm:/prop:/cor:/def:/
+    ass:/...). Excludes the claim's own label and non-claim labels (sec:,
+    fig:, tab:, alg:, eq:).
+
+    Used to auto-populate `depends_on` when claims.json doesn't ship it.
+    The Pedantic subagent on one-shot pointed out that empty depends_on
+    forces the persona to either ignore dependencies or read the full
+    manuscript — neither is good.
+    """
+    seen: List[str] = []
+    seen_set: set = set()
+    for i in range(start_idx, end_idx + 1):
+        for m in RE_REF.finditer(lines[i]):
+            lab = m.group(1)
+            if lab == self_label or lab in seen_set:
+                continue
+            if not any(lab.startswith(p) for p in CLAIM_LABEL_PREFIXES):
+                continue
+            seen.append(lab)
+            seen_set.add(lab)
+    return seen
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +397,21 @@ def _assemble_package(
     span_end = proof_end if proof_end is not None else stmt_end
     hypers = collect_hypertargets(lines, stmt_start, span_end)
 
+    # Phase β.1.1 — auto-extract depends_on from \ref/\eqref/\Cref of
+    # claim-like labels in statement+proof. Merge with any depends_on already
+    # in claims.json (manual or LLM-extracted), preserving manual order.
+    auto_deps = collect_referenced_claim_labels(
+        lines, stmt_start, span_end, self_label=claim.get("label", "")
+    )
+    manual_deps = list(claim.get("depends_on") or [])
+    # Stable union: manual first, then any auto deps not already in manual
+    seen = set(manual_deps)
+    merged_deps = list(manual_deps)
+    for d in auto_deps:
+        if d not in seen:
+            merged_deps.append(d)
+            seen.add(d)
+
     # Section header (the most recent \section/\subsection above stmt_start)
     section_header = find_section_header(lines, stmt_start)
 
@@ -362,7 +428,8 @@ def _assemble_package(
         "title": claim.get("title", ""),
         "manuscript": manuscript_path,
         "appendix_section": claim.get("appendix_section", ""),
-        "depends_on": claim.get("depends_on", []),
+        "depends_on": merged_deps,
+        "depends_on_auto": auto_deps,  # diagnostic: only the auto-extracted refs
         "stmt_start": stmt_start + 1,           # 1-indexed for human use
         "stmt_end": stmt_end + 1,
         "proof_start": (proof_start + 1) if proof_start is not None else None,

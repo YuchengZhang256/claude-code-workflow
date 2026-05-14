@@ -520,7 +520,15 @@ def _cmd_migrate(args):
                 "first_round": round_n,
                 "current_severity": entry.get("severity", 0),
                 "max_severity": entry.get("severity", 0),
-                "excerpt": entry.get("issue", entry.get("excerpt", ""))[:200],
+                # gap.schema.json names the field `gap_description`. Older
+                # synthesized.json variants used `issue`; some hand-edited ones
+                # use `excerpt`. Try all three to keep cross-version migration
+                # lossless.
+                "excerpt": (
+                    entry.get("gap_description")
+                    or entry.get("issue")
+                    or entry.get("excerpt", "")
+                )[:200],
                 "sources": entry.get("surfaced_by", []),
             }
             s.upsert_finding(f)

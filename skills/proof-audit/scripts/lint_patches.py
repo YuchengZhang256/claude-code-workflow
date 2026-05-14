@@ -133,6 +133,28 @@ STANDARD_MACROS = frozenset({
     "mathbb", "Pr", "Var", "Cov", "Cor", "E",
     # bbm-like single-letter
     "ldots", "cdots", "vdots", "ddots", "dots",
+    # Linear algebra / matrix notation (AMS / built-in) — added after
+    # one-shot validation flagged these as "suspicious" (false positive).
+    "top", "perp", "circ", "ast", "star", "dagger", "ddagger", "cdot",
+    "succeq", "preceq", "succ", "prec", "succsim", "precsim",
+    "trace", "tr", "rank", "diag", "Diag", "vec", "Vec",
+    # Logical operators
+    "vee", "wedge", "veebar",
+    # Text-mode font selectors used inside math (mathtools / amsmath)
+    "textup", "textnormal", "textsl", "textmd", "textbf", "textit",
+    # Set / probability operators
+    "subsetneq", "supsetneq", "sqsubseteq", "sqsupseteq",
+    "land", "lor", "lnot", "implies", "iff", "Longleftrightarrow",
+    # Common math fonts & decorations
+    "mathring", "check", "breve", "acute", "grave",
+    # Norms / inner products often used unbraced
+    "norm", "abs", "inner", "ip",
+    # Greek letters not in main list
+    "Pi", "Sigma", "Theta",  # already there but defensive
+    # Common theorem-proof-environment macros
+    "qedhere", "iffalse", "fi",
+    # Conditional probability shorthand often used unbraced
+    "given", "mid",
 })
 
 
@@ -290,19 +312,66 @@ def lint_downstream_impact(
     return warnings
 
 
-# Regime classification — applied to the RHS captured from RE_SYMBOL_REGIME
-# (the connector `\to | \rightarrow | =` has already been consumed). The two
-# antonym pairs to detect are (tends_to_infty | fixed) and (tends_to_zero |
-# stoch_bounded).
+# Regime classification — applied to BOTH sides (patch and assumption block).
+# These tokens identify a parameter regime IDIOM, not just a token presence.
+# Each entry is (regex, label, exclude_predicate). exclude_predicate takes
+# the surrounding text and the match, returns True to reject.
+def _inside_subscript_or_norm(text: str, m: re.Match) -> bool:
+    """Reject \\to\\infty when it sits inside a `_{...}` subscript or `\\|...\\|`
+    norm notation (e.g., `\\|V\\|_{2\\to\\infty}` is the 2→∞ operator norm,
+    not a parameter limit). This was the source of a real false-positive on
+    one-shot's `ass:incoherence` block.
+
+    Heuristic: scan backward from match.start() up to 60 chars; if we find
+    an unmatched `_{` or `\\|`, this is inside a subscript / norm, reject.
+    """
+    pre = text[max(0, m.start() - 60): m.start()]
+    # Count unbalanced `_{` (subscript-open) without matching `}` after it
+    depth = 0
+    i = 0
+    while i < len(pre):
+        if pre[i:i+2] == "_{":
+            depth += 1
+            i += 2
+        elif pre[i] == "}" and depth > 0:
+            depth -= 1
+            i += 1
+        else:
+            i += 1
+    if depth > 0:
+        return True
+    # Also reject if preceded (within 30 chars) by `<\infty` or `\le\infty`
+    # patterns — those mean "is finite", not "→ ∞"
+    if re.search(r"(<|\\le|\\leq)\s*\\infty", pre[-30:]):
+        return True
+    return False
+
+
 REGIME_TOKENS = (
-    (re.compile(r"\\infty\b"), "tends_to_infty"),
-    (re.compile(r"^\s*0\s*$"), "tends_to_zero"),
-    (re.compile(r"\bfixed\b", re.IGNORECASE), "fixed"),
-    (re.compile(r"\bbounded\b", re.IGNORECASE), "bounded"),
-    (re.compile(r"\bgrows?\b|\bgrowing\b", re.IGNORECASE), "grows"),
-    (re.compile(r"\bo_\\?p?\(1\)|\bo_\\bbP\(1\)"), "vanishing"),
-    (re.compile(r"\bO_\\?p?\(1\)|\bO_\\bbP\(1\)"), "stoch_bounded"),
+    # Genuine `\to\infty` limit idiom
+    (re.compile(r"\\(?:to|rightarrow|longrightarrow)\s*\\infty\b"),
+     "tends_to_infty", _inside_subscript_or_norm),
+    (re.compile(r"\\(?:to|rightarrow|longrightarrow)\s*0(?![A-Za-z0-9])"),
+     "tends_to_zero", _inside_subscript_or_norm),
+    # Prose "is fixed" / "fixed throughout" — not just any "fixed"
+    (re.compile(r"\b(?:is|are)\s+fixed\b|fixed\s+throughout", re.IGNORECASE),
+     "fixed", None),
+    # Prose "is bounded" / "remains bounded" — not just any "bounded"
+    (re.compile(r"\b(?:is|are|remains?|stays?)\s+bounded\b", re.IGNORECASE),
+     "bounded", None),
+    (re.compile(r"\b(?:grows?|growing)\s+(?:to|with|as)\b", re.IGNORECASE),
+     "grows", None),
+    (re.compile(r"\bo_\\?p?\(1\)|\bo_\\bbP\(1\)"), "vanishing", None),
+    (re.compile(r"\bO_\\?p?\(1\)|\bO_\\bbP\(1\)"), "stoch_bounded", None),
 )
+
+
+def _regime_match(text: str, regex: re.Pattern, exclude) -> bool:
+    """Return True iff `regex` matches `text` AND exclude predicate is False."""
+    for m in regex.finditer(text):
+        if exclude is None or not exclude(text, m):
+            return True
+    return False
 # Pairs that count as a regime conflict (order-insensitive)
 CONFLICTING_PAIRS = frozenset({
     frozenset({"tends_to_infty", "fixed"}),
@@ -340,8 +409,8 @@ def lint_semantic_conflict(
     for sym_match in RE_SYMBOL_REGIME.finditer(patch):
         symbol = sym_match.group(1)
         rhs = sym_match.group(2)
-        for token_re, label in REGIME_TOKENS:
-            if token_re.search(rhs):
+        for token_re, label, exclude in REGIME_TOKENS:
+            if _regime_match(rhs, token_re, exclude):
                 patch_regimes.append((symbol, label))
     # Also capture "<symbol> is fixed/bounded" outside math mode (heuristic)
     for prose_m in re.finditer(
@@ -367,12 +436,12 @@ def lint_semantic_conflict(
                 if not re.search(r"\b" + re.escape(symbol) + r"\b", block):
                     continue
                 # Look for ANY conflicting regime label inside the block
-                for token_re, paper_label in REGIME_TOKENS:
+                for token_re, paper_label, exclude in REGIME_TOKENS:
                     if paper_label == patch_label:
                         continue
                     if frozenset({patch_label, paper_label}) not in CONFLICTING_PAIRS:
                         continue
-                    if token_re.search(block):
+                    if _regime_match(block, token_re, exclude):
                         conflicts.append(
                             f"patch states `{symbol}` is `{patch_label}` but "
                             f"an existing Assumption block describes the same "

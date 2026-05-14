@@ -115,10 +115,22 @@ def classify_finding(
     finding: gap.schema.json shape (severity, gap_type, issue/explanation, etc.)
     state_finding: corresponding entry from state.json (for recurring count, prior fixes).
     """
-    sev = int(finding.get("severity", 0))
+    # Severity field name varies by source: gap.schema.json (persona output)
+    # uses `severity`; state.schema.json (durable findings) uses
+    # `current_severity`. Tolerate both.
+    sev = int(
+        finding.get("severity")
+        or finding.get("current_severity")
+        or finding.get("max_severity")
+        or 0
+    )
     gap_type = (finding.get("gap_type") or finding.get("status") or "").strip()
+    # Field-name compatibility: gap.schema.json calls it `gap_description`;
+    # legacy synthesizers used `issue`; some persona variants emitted
+    # `explanation`/`attack_scenario`/`missing_condition`. Try all.
     issue_text = (
-        finding.get("issue")
+        finding.get("gap_description")
+        or finding.get("issue")
         or finding.get("explanation")
         or finding.get("attack_scenario")
         or finding.get("missing_condition")
@@ -298,7 +310,12 @@ def _cmd_update_state(args):
                 "first_round": args.round,
                 "current_severity": f.get("severity", 0),
                 "max_severity": f.get("severity", 0),
-                "excerpt": (f.get("issue") or f.get("explanation") or "")[:200],
+                "excerpt": (
+                    f.get("gap_description")
+                    or f.get("issue")
+                    or f.get("explanation")
+                    or ""
+                )[:200],
                 "sources": [f.get("source", "unknown")],
             })
         s.set_tier(existing["finding_id"], f["tier"], f["tier_rationale"], args.round)

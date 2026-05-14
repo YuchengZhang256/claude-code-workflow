@@ -152,7 +152,7 @@
         },
         "latex_patch": {
           "type": "string",
-          "description": "Concrete LaTeX snippet that fixes the gap. Use empty string '' when status == 'verified'. When non-empty, MUST reference real label names from the paper source — host postflight checks this with grep."
+          "description": "Concrete LaTeX snippet that fixes the gap. Use empty string '' when status == 'verified'. When non-empty: (a) MUST start with `\\hypertarget{<hypertarget_anchor>}{}%` on its own line — using the EXACT string from this finding's hypertarget_anchor field — so the patch site is traceable; (b) MUST reference real label names from the paper source (\\ref/\\eqref/\\Cref to existing labels). Both rules are checked by lint_patches.py and a violation downgrades the finding to RESIDUAL.md."
         },
         "insertion_hint": {
           "type": "string",
