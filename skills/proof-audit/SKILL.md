@@ -153,6 +153,13 @@ Five CLI tools introduced together (Phase α: state/triage/convergence; Phase β
 After Phase 1 has produced `proof_audit/claims.json`, the per-round loop is:
 
 ```bash
+# All-in-one bootstrap (auto-extracts claims.json from main.tex if missing,
+# builds packages, inits state) — works for both single- and multi-file manuscripts
+python3 scripts/proof_audit.py init --manuscript main.tex --auto-extract
+
+# Or step-by-step:
+# Phase 1: extract claims.json from a (possibly multi-file) manuscript
+python3 scripts/extract_claims.py extract --root main.tex --out proof_audit/claims.json
 # Once per session: build per-claim packages (Phase β.1)
 python3 scripts/package_claims.py build --claims proof_audit/claims.json
 
@@ -233,9 +240,22 @@ python3 scripts/batch_claims.py show --batches proof_audit/claim_batches.json
 
 Heuristics: group by `section_header`, keep `depends_on` chains together, cap each batch at `max_batch_claims` AND `max_batch_lines`. Adversarial is intentionally NOT batched (Route B sends it to codex instead — see Phase γ.1).
 
+### `scripts/extract_claims.py` — Phase 1 auto-extractor (multi-file aware)
+
+Walks a root .tex and follows `\input{}` / `\include{}` recursively to find every `\begin{<claim_env>}` with a nearby `\label{}`. Emits `claims.json` in the format `package_claims.py` consumes. Use this as a deterministic fallback when the orchestrating session hasn't done curated Phase 1 (real Phase 1 with LLM judgment gives better titles + dependency analysis).
+
+```bash
+python3 scripts/extract_claims.py extract \
+    --root main.tex \
+    --out proof_audit/claims.json \
+    --exclude-remarks
+```
+
+Each claim's `file_line` is qualified with the actual sub-file path (e.g. `supp/theory_full.tex:42`), enabling multi-file manuscripts. Auto-populates `depends_on` from `\ref{}` in the next ~200 lines after each claim. Validated on hier_bk_neurips: 44 claims across 21 files extracted in <1s, 42/44 with non-empty depends_on.
+
 ### `scripts/package_claims.py` — Per-claim pre-slicing (Phase β.1)
 
-Pre-slices the manuscript .tex into per-claim packages so subagents can read a 100-300 line window per claim instead of the full 4000+ line manuscript. Addresses the recurring socket-fail mode where the Adversarial persona dies after 9-15 Read tool calls (observed 4/4 times in the osaa case study).
+Pre-slices the manuscript .tex into per-claim packages so subagents can read a 100-300 line window per claim instead of the full 4000+ line manuscript. **Multi-file aware** (Phase β.1 update from hier_bk validation): when `file_line` includes a sub-file path, reads from that file. Also supports **cross-file statement/proof split** (common in math papers with `theory_full.tex` for statements + `theory_proofs.tex` for proofs): if no `\begin{proof}` is found within 30 lines of the statement, scans all sibling files for `\begin{proof}[Proof of <Kind>~\ref{<this_label>}]` and embeds it.
 
 ```bash
 # Build all packages from claims.json
@@ -252,7 +272,9 @@ python3 scripts/package_claims.py inspect \
 python3 scripts/package_claims.py manifest --outdir proof_audit/claim_packages
 ```
 
-Each `claim_packages/{Cxx}.json` contains: `statement_text`, `proof_text`, `context_before_text`, `context_after_text`, `hypertargets[]`, `section_header`, `depends_on[]`, plus 1-indexed line ranges for traceability. The builder uses label-based anchoring (with full-file fallback when `claims.json` is stale relative to the current manuscript), and tracks `warnings[]` for any heuristic mismatches.
+Each `claim_packages/{Cxx}.json` contains: `statement_text`, `proof_text`, `context_before_text`, `context_after_text`, `hypertargets[]`, `section_header`, `depends_on[]`, `manuscript`, `proof_file`, `cross_file_proof` (bool), plus 1-indexed line ranges for traceability. The builder uses label-based anchoring (with full-file fallback when `claims.json` is stale), tracks `warnings[]` for problems, and `info[]` for successful cross-file proof discovery.
+
+Validated on hier_bk_neurips (4500 lines, 21 files): 44/44 packages built, 30 with cross-file proof pairing (theory_full → theory_proofs), 84% have proof blocks (vs ~30% before cross-file pairing).
 
 `scripts/state.py prior --packages-dir proof_audit/claim_packages` injects a `package_path` into every active finding in `prior_round_state.json`. Persona prompts then read that small package directly (~150 lines) instead of opening the manuscript. **Validated on osaa: 22× token reduction per claim** (205 lines for C20 vs 4612-line manuscript).
 

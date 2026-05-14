@@ -71,9 +71,21 @@ def _run_sibling(script: str, args: List[str]) -> int:
 # Subcommand handlers
 # ---------------------------------------------------------------------------
 def _cmd_init(args, extra: List[str]) -> int:
-    """init: build packages + init state.json"""
+    """init: extract claims (if --auto-extract) + build packages + init state.json"""
     rc = 0
-    # 1. packages
+    # 0. auto-extract claims.json from root tex if requested AND it doesn't exist
+    if args.auto_extract:
+        claims_path = Path(args.claims)
+        if not claims_path.exists() or args.force:
+            print(f"=== extract_claims (auto) ===")
+            ec_args = ["extract", "--root", args.manuscript, "--out", args.claims]
+            rc |= _run_sibling("extract_claims.py", ec_args)
+            if rc:
+                return rc
+        else:
+            print(f"claims {claims_path} already exists; skipping auto-extract "
+                  "(pass --force to re-extract)")
+    # 1. packages (multi-file aware: package_claims will follow file_line paths)
     pkg_args = ["build", "--claims", args.claims, "--outdir", args.packages_dir]
     if args.context_lines is not None:
         pkg_args += ["--context-lines", str(args.context_lines)]
@@ -91,6 +103,15 @@ def _cmd_init(args, extra: List[str]) -> int:
             + (["--force"] if args.force else []),
         )
     return rc
+
+
+def _cmd_extract(args, extra: List[str]) -> int:
+    """extract: walk root tex (multi-file aware) and emit claims.json"""
+    return _run_sibling(
+        "extract_claims.py",
+        ["extract", "--root", args.root, "--out", args.out]
+        + (extra or []),
+    )
 
 
 def _cmd_packages(args, extra: List[str]) -> int:
@@ -190,14 +211,23 @@ def main():
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("init", help="bootstrap: build packages + init state.json")
+    p = sub.add_parser("init", help="bootstrap: extract claims (optional) + build packages + init state.json")
     p.add_argument("--claims", default="proof_audit/claims.json")
-    p.add_argument("--manuscript", required=True, help="path to manuscript .tex")
+    p.add_argument("--manuscript", required=True, help="path to root manuscript .tex")
     p.add_argument("--state", default="proof_audit/state.json")
     p.add_argument("--packages-dir", default="proof_audit/claim_packages")
     p.add_argument("--context-lines", type=int, default=None)
-    p.add_argument("--force", action="store_true")
+    p.add_argument("--force", action="store_true",
+                   help="overwrite existing claims.json + state.json")
+    p.add_argument("--auto-extract", action="store_true",
+                   help="if claims.json doesn't exist, auto-extract via extract_claims.py "
+                        "(walks \\input recursively for multi-file manuscripts)")
     p.set_defaults(func=_cmd_init)
+
+    p = sub.add_parser("extract", help="auto-extract claims.json from a (possibly multi-file) manuscript")
+    p.add_argument("--root", required=True, help="root .tex (e.g. main.tex)")
+    p.add_argument("--out", default="proof_audit/claims.json")
+    p.set_defaults(func=_cmd_extract)
 
     p = sub.add_parser("packages", help="rebuild claim packages")
     p.add_argument("--claims", default="proof_audit/claims.json")

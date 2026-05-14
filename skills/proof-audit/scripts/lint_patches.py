@@ -142,6 +142,9 @@ STANDARD_MACROS = frozenset({
     "vee", "wedge", "veebar",
     # Text-mode font selectors used inside math (mathtools / amsmath)
     "textup", "textnormal", "textsl", "textmd", "textbf", "textit",
+    # Legacy LaTeX font selectors (deprecated but built-in, still used in math)
+    "rm", "bf", "it", "sl", "sf", "tt", "cal", "em",
+    "rmfamily", "sffamily", "ttfamily",
     # Set / probability operators
     "subsetneq", "supsetneq", "sqsubseteq", "sqsupseteq",
     "land", "lor", "lnot", "implies", "iff", "Longleftrightarrow",
@@ -534,9 +537,25 @@ def main() -> int:
             return 2
 
     data = json.loads(args.synthesized.read_text())
-    findings = data.get("findings") if isinstance(data, dict) else data
-    if not isinstance(findings, list):
-        print("synthesized.json must have a top-level array or {'findings':[...]}", file=sys.stderr)
+    # Accept three shapes:
+    #   1. top-level array: [finding, ...]
+    #   2. {"findings": [...]} (persona output shape)
+    #   3. {"tier_A_strong": [...], "tier_B_cross_validated": [...],
+    #       "tier_C_solo": [...], "tier_D_disputed": [...]} (Phase 2d synth)
+    findings: list[Any] = []
+    if isinstance(data, list):
+        findings = data
+    elif isinstance(data, dict):
+        if "findings" in data and isinstance(data["findings"], list):
+            findings = data["findings"]
+        else:
+            for key in ("tier_A_strong", "tier_B_cross_validated",
+                        "tier_C_solo", "tier_D_disputed"):
+                if isinstance(data.get(key), list):
+                    findings.extend(data[key])
+    if not findings:
+        print("synthesized.json had no findings (expected top-level array, "
+              "{'findings':[...]}, or {'tier_*': [...]})", file=sys.stderr)
         return 2
 
     existing_labels = collect_existing_labels(args.paper_source)

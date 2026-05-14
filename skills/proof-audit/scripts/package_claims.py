@@ -200,6 +200,34 @@ def find_proof_after(lines: List[str], stmt_end_idx: int,
     return None
 
 
+def find_proof_cross_file(
+    target_label: str,
+    extra_files: List[Tuple[Path, List[str]]],
+) -> Optional[Tuple[Path, int, int]]:
+    """Find a `\\begin{proof}[Proof of <Kind>~\\ref{target_label}]...\\end{proof}`
+    block across other files. Returns (file_path, 0-idx start, 0-idx end) or None.
+
+    Common pattern in math papers with statement/proof split:
+        statements live in supp/theory_full.tex
+        proofs live in supp/theory_proofs.tex
+        each proof opens with `\\begin{proof}[Proof of Lemma~\\ref{lem:foo}]`
+    """
+    # Match `\begin{proof}[ ... \ref{<label>} ... ]` (allow Cref/cref/eqref too)
+    proof_for_label = re.compile(
+        r"\\begin\{proof\}\[[^\]]*\\(?:ref|Cref|cref|eqref)\{"
+        + re.escape(target_label) + r"\}[^\]]*\]"
+    )
+    for path, file_lines in extra_files:
+        for i, line in enumerate(file_lines):
+            if proof_for_label.search(line):
+                try:
+                    end = find_matching_end(file_lines, i, "proof")
+                    return (path, i, end)
+                except ValueError:
+                    continue
+    return None
+
+
 def find_section_header(lines: List[str], before_idx: int,
                         max_walk: int = 1500) -> Optional[str]:
     """Walk backward from `before_idx` to find the most recent section header.
@@ -261,29 +289,55 @@ def collect_referenced_claim_labels(
 # ---------------------------------------------------------------------------
 # Per-claim package builder
 # ---------------------------------------------------------------------------
+def parse_file_line(file_line_str: str) -> Tuple[Optional[str], Optional[int]]:
+    """Split `file_line` into (path_or_None, line_or_None).
+
+    Accepts:
+      "sections/foo.tex:42"  -> ("sections/foo.tex", 42)
+      "42"                   -> (None, 42)
+      ""                     -> (None, None)
+    Multi-file aware. The path part lets package_claims read the right file
+    when a manuscript is composed of many \\input'd sub-files.
+    """
+    if not file_line_str:
+        return None, None
+    if ":" not in file_line_str:
+        try:
+            return None, int(file_line_str)
+        except ValueError:
+            return None, None
+    head, tail = file_line_str.rsplit(":", 1)
+    try:
+        return head, int(tail)
+    except ValueError:
+        return file_line_str, None
+
+
 def build_package(claim: Dict[str, Any], lines: List[str],
                   manuscript_path: str,
-                  context_lines: int) -> Dict[str, Any]:
+                  context_lines: int,
+                  extra_files: Optional[List[Tuple[Path, List[str]]]] = None,
+                  ) -> Dict[str, Any]:
     """Build one package dict for `claim`.
 
-    `lines` are the manuscript file split by '\\n', preserving 0-indexed access.
+    `lines` are the lines of the FILE that contains this claim (as parsed
+    from `file_line`). For single-file manuscripts this is the same as the
+    global manuscript; for multi-file manuscripts the caller passes in the
+    sub-file's lines for each claim. `manuscript_path` is recorded in the
+    package for human readers.
     """
     warnings: List[str] = []
     label = claim.get("label", "")
     kind = claim.get("kind", "")
     file_line_str = claim.get("file_line", "")
 
-    # Parse "src/foo.tex:389" -> 389 (1-indexed)
-    file_line_1 = None
-    if ":" in file_line_str:
-        try:
-            file_line_1 = int(file_line_str.rsplit(":", 1)[-1])
-        except ValueError:
-            warnings.append(f"could not parse file_line: {file_line_str!r}")
+    file_path_in_str, file_line_1 = parse_file_line(file_line_str)
     if file_line_1 is None:
         # Fall back to scanning whole file for the label
         file_line_1 = 1
-        warnings.append("no file_line; scanning whole manuscript for label")
+        warnings.append(
+            "no parseable line in file_line; scanning whole manuscript for label"
+        )
 
     center_idx = max(0, file_line_1 - 1)  # 0-indexed
 
@@ -357,18 +411,45 @@ def build_package(claim: Dict[str, Any], lines: List[str],
         warnings.append(str(e))
         stmt_end_idx = min(len(lines) - 1, stmt_start_idx + 60)
 
-    # Step 4: find subsequent proof block (optional)
+    # Step 4: find subsequent proof block (in-file)
     proof = find_proof_after(lines, stmt_end_idx, max_skip=30)
-    if proof is None and kind not in {"definition", "remark", "assumption", "fact"}:
-        warnings.append(f"no \\begin{{proof}} found within 30 lines of \\end{{{env_name}}}")
     proof_start_idx = proof[0] if proof else None
     proof_end_idx = proof[1] if proof else None
+    proof_lines = lines  # which file's lines correspond to proof_start/end
+    proof_file_path = manuscript_path  # default: proof in same file as statement
+
+    # Step 4b: if no in-file proof and we have extra_files to search, look for
+    # a `\begin{proof}[Proof of <Kind>~\ref{<label>}]` block elsewhere.
+    # Skip kinds that conventionally have no proof (definition/assumption/etc).
+    NEEDS_PROOF = {"lemma", "theorem", "proposition", "corollary"}
+    info: List[str] = []
+    if proof is None and kind in NEEDS_PROOF and extra_files and label:
+        cross = find_proof_cross_file(label, extra_files)
+        if cross is not None:
+            xfile, xstart, xend = cross
+            proof_start_idx = xstart
+            proof_end_idx = xend
+            proof_lines = None  # marker: proof lives in a different file
+            proof_file_path = str(xfile)
+            # Informational, not a warning — found cross-file proof successfully
+            info.append(
+                f"proof located in separate file {xfile.name} "
+                f"(lines {xstart + 1}-{xend + 1}); statement-proof split detected"
+            )
+
+    if proof_start_idx is None and kind not in {"definition", "remark", "assumption", "fact"}:
+        warnings.append(f"no \\begin{{proof}} found within 30 lines of \\end{{{env_name}}} "
+                        "(and no cross-file proof block referenced this label)")
 
     return _assemble_package(
         claim, lines, manuscript_path, context_lines,
         stmt_start_idx, stmt_end_idx,
         proof_start=proof_start_idx, proof_end=proof_end_idx,
         warnings=warnings,
+        info=info,
+        proof_lines=proof_lines,
+        proof_file_path=proof_file_path if proof_lines is None else manuscript_path,
+        extra_files=extra_files,
     )
 
 
@@ -382,27 +463,71 @@ def _assemble_package(
     proof_start: Optional[int],
     proof_end: Optional[int],
     warnings: List[str],
+    info: Optional[List[str]] = None,
+    proof_lines: Optional[List[str]] = None,
+    proof_file_path: Optional[str] = None,
+    extra_files: Optional[List[Tuple[Path, List[str]]]] = None,
 ) -> Dict[str, Any]:
-    """Build the final package dict from already-resolved 0-indexed line ranges."""
-    n = len(lines)
+    """Build the final package dict from already-resolved 0-indexed line ranges.
 
-    # Context windows (clamp to file bounds; expand around proof if present)
+    `proof_lines is None` means the proof lives in a different file than the
+    statement (cross-file pairing); we look it up in `extra_files`. If
+    `proof_lines is the SAME object as `lines`, the proof is in-file.
+    """
+    n = len(lines)
+    cross_file_proof = proof_lines is None
+
+    # Resolve cross-file proof_lines for slicing
+    if cross_file_proof and proof_file_path and extra_files:
+        for path, file_lines in extra_files:
+            if str(path) == proof_file_path:
+                proof_lines = file_lines
+                break
+    if proof_lines is None:
+        proof_lines = lines  # fallback (should not happen if extra_files set)
+
+    # Context windows (clamp to FILE bounds; cross-file proofs use proof file's
+    # context_after, in-file proofs use statement file's context_after)
     ctx_before_start = max(0, stmt_start - context_lines)
     ctx_before_end = max(ctx_before_start, stmt_start - 1)
-    body_end = proof_end if proof_end is not None else stmt_end
-    ctx_after_start = min(n - 1, body_end + 1)
-    ctx_after_end = min(n - 1, body_end + context_lines)
+    if cross_file_proof:
+        # Statement file context_after is just after stmt_end
+        ctx_after_start = min(n - 1, stmt_end + 1)
+        ctx_after_end = min(n - 1, stmt_end + context_lines)
+        # Proof file context comes around the proof
+        proof_n = len(proof_lines)
+        proof_ctx_before_start = max(0, (proof_start or 0) - context_lines)
+        proof_ctx_before_end = max(proof_ctx_before_start, (proof_start or 0) - 1)
+        proof_ctx_after_start = min(proof_n - 1, (proof_end or 0) + 1)
+        proof_ctx_after_end = min(proof_n - 1, (proof_end or 0) + context_lines)
+    else:
+        body_end = proof_end if proof_end is not None else stmt_end
+        ctx_after_start = min(n - 1, body_end + 1)
+        ctx_after_end = min(n - 1, body_end + context_lines)
+        proof_ctx_before_start = proof_ctx_before_end = None
+        proof_ctx_after_start = proof_ctx_after_end = None
 
-    # Collect hypertargets across statement + proof
-    span_end = proof_end if proof_end is not None else stmt_end
-    hypers = collect_hypertargets(lines, stmt_start, span_end)
+    # Collect hypertargets: statement always from `lines`, proof from `proof_lines`
+    hypers = collect_hypertargets(lines, stmt_start, stmt_end)
+    if proof_start is not None and proof_end is not None:
+        hypers = hypers + collect_hypertargets(proof_lines, proof_start, proof_end)
 
     # Phase β.1.1 — auto-extract depends_on from \ref/\eqref/\Cref of
     # claim-like labels in statement+proof. Merge with any depends_on already
     # in claims.json (manual or LLM-extracted), preserving manual order.
+    self_lbl = claim.get("label", "")
     auto_deps = collect_referenced_claim_labels(
-        lines, stmt_start, span_end, self_label=claim.get("label", "")
+        lines, stmt_start, stmt_end, self_label=self_lbl
     )
+    if proof_start is not None and proof_end is not None:
+        proof_deps = collect_referenced_claim_labels(
+            proof_lines, proof_start, proof_end, self_label=self_lbl
+        )
+        seen = set(auto_deps)
+        for d in proof_deps:
+            if d not in seen:
+                auto_deps.append(d)
+                seen.add(d)
     manual_deps = list(claim.get("depends_on") or [])
     # Stable union: manual first, then any auto deps not already in manual
     seen = set(manual_deps)
@@ -415,10 +540,10 @@ def _assemble_package(
     # Section header (the most recent \section/\subsection above stmt_start)
     section_header = find_section_header(lines, stmt_start)
 
-    def _slice(a: int, b: int) -> str:
+    def _slice(arr: List[str], a: int, b: int) -> str:
         if b < a:
             return ""
-        return "\n".join(lines[a : b + 1])
+        return "\n".join(arr[a : b + 1])
 
     pkg: Dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -427,6 +552,8 @@ def _assemble_package(
         "kind": claim.get("kind", ""),
         "title": claim.get("title", ""),
         "manuscript": manuscript_path,
+        "proof_file": proof_file_path or manuscript_path,
+        "cross_file_proof": bool(cross_file_proof),
         "appendix_section": claim.get("appendix_section", ""),
         "depends_on": merged_deps,
         "depends_on_auto": auto_deps,  # diagnostic: only the auto-extracted refs
@@ -440,12 +567,25 @@ def _assemble_package(
         "context_after_end": ctx_after_end + 1,
         "hypertargets": hypers,
         "section_header": section_header,
-        "statement_text": _slice(stmt_start, stmt_end),
-        "proof_text": _slice(proof_start, proof_end) if proof_start is not None else "",
-        "context_before_text": _slice(ctx_before_start, ctx_before_end),
-        "context_after_text": _slice(ctx_after_start, ctx_after_end),
+        "statement_text": _slice(lines, stmt_start, stmt_end),
+        "proof_text": (
+            _slice(proof_lines, proof_start, proof_end)
+            if proof_start is not None else ""
+        ),
+        "context_before_text": _slice(lines, ctx_before_start, ctx_before_end),
+        "context_after_text": _slice(lines, ctx_after_start, ctx_after_end),
         "warnings": warnings,
+        "info": info or [],
     }
+    if cross_file_proof and proof_ctx_before_start is not None:
+        # Surface the proof file's surrounding context too — the auditor often
+        # needs to see what's around the proof, not just around the statement.
+        pkg["proof_context_before_text"] = _slice(
+            proof_lines, proof_ctx_before_start, proof_ctx_before_end
+        )
+        pkg["proof_context_after_text"] = _slice(
+            proof_lines, proof_ctx_after_start, proof_ctx_after_end
+        )
 
     # Total span (lines actually packaged) - useful metric for the manifest
     pkg["total_span_lines"] = (
@@ -490,7 +630,51 @@ def _cmd_build(args):
         else:
             print(f"ERROR: manuscript {manuscript_path} not found", file=sys.stderr)
             sys.exit(2)
-    lines = tex_path.read_text().split("\n")
+    # The "root" for resolving file_line paths is the directory containing the
+    # root manuscript. For single-file mode this is just where the .tex lives;
+    # for multi-file mode, sub-files are referenced relative to this dir.
+    root_dir = tex_path.parent.resolve()
+
+    # Per-file line cache. Read each .tex on demand (claims may live in
+    # different sub-files for multi-file manuscripts).
+    lines_cache: Dict[str, List[str]] = {}
+
+    def _lines_for(rel_path: Optional[str]) -> Tuple[Path, List[str]]:
+        """Return (resolved_path, lines) for the file referenced by rel_path.
+        rel_path=None means use the global manuscript."""
+        if rel_path is None or rel_path == "":
+            key = str(tex_path.resolve())
+            if key not in lines_cache:
+                lines_cache[key] = tex_path.read_text(
+                    encoding="utf-8", errors="replace"
+                ).split("\n")
+            return tex_path, lines_cache[key]
+        # Resolve sub-file relative to root_dir
+        cand = (root_dir / rel_path).resolve()
+        key = str(cand)
+        if key in lines_cache:
+            return cand, lines_cache[key]
+        if cand.exists():
+            lines_cache[key] = cand.read_text(
+                encoding="utf-8", errors="replace"
+            ).split("\n")
+            return cand, lines_cache[key]
+        # Fallback: try the path as-is from cwd
+        cand2 = Path(rel_path).resolve()
+        if cand2.exists():
+            key2 = str(cand2)
+            if key2 not in lines_cache:
+                lines_cache[key2] = cand2.read_text(
+                    encoding="utf-8", errors="replace"
+                ).split("\n")
+            return cand2, lines_cache[key2]
+        # Last resort: use root manuscript and let build_package warn
+        key3 = str(tex_path.resolve())
+        if key3 not in lines_cache:
+            lines_cache[key3] = tex_path.read_text(
+                encoding="utf-8", errors="replace"
+            ).split("\n")
+        return tex_path, lines_cache[key3]
 
     only_set = set()
     if args.only:
@@ -502,12 +686,40 @@ def _cmd_build(args):
     manifest_entries: List[Dict[str, Any]] = []
     n_built = 0
     n_warned = 0
+    # Pre-load all files referenced by claims so cross-file proof search has
+    # them available. This is a single-pass enrichment (not lazy) because
+    # the proof finder needs the whole list anyway.
+    referenced_files: Set[str] = set()
+    for claim in claims_list:
+        fp_str, _ = parse_file_line(claim.get("file_line", ""))
+        if fp_str:
+            referenced_files.add(fp_str)
+    # Also bring in any "files" field from claims.json (extract_claims.py
+    # writes one). This ensures we know about proof-only files like
+    # `supp/theory_proofs.tex` that don't host any statement.
+    if isinstance(claims_doc, dict):
+        for f in claims_doc.get("files") or []:
+            referenced_files.add(f)
+    for fp_str in referenced_files:
+        _lines_for(fp_str)
+    extra_files: List[Tuple[Path, List[str]]] = [
+        (Path(k), v) for k, v in lines_cache.items()
+    ]
+
+    n_subfile_packages = 0
     for claim in claims_list:
         cid = claim.get("claim_id", "")
         if only_set and cid not in only_set:
             continue
+        # Multi-file: pick the right tex for THIS claim from its file_line path
+        file_path_in_str, _ = parse_file_line(claim.get("file_line", ""))
+        actual_tex, actual_lines = _lines_for(file_path_in_str)
+        if actual_tex != tex_path:
+            n_subfile_packages += 1
         try:
-            pkg = build_package(claim, lines, str(tex_path), args.context_lines)
+            pkg = build_package(claim, actual_lines, str(actual_tex),
+                                args.context_lines,
+                                extra_files=extra_files)
         except Exception as e:  # pragma: no cover - defensive
             pkg = {
                 "schema_version": SCHEMA_VERSION,
@@ -543,6 +755,8 @@ def _cmd_build(args):
         "context_lines": args.context_lines,
         "total_packages": n_built,
         "packages_with_warnings": n_warned,
+        "subfile_packages": n_subfile_packages,
+        "files_read": sorted(lines_cache.keys()),
         "entries": manifest_entries,
     }
     (outdir / "_manifest.json").write_text(
@@ -550,6 +764,9 @@ def _cmd_build(args):
     )
     print(f"Built {n_built} package(s) -> {outdir}")
     print(f"  warnings: {n_warned} package(s)")
+    if n_subfile_packages:
+        print(f"  multi-file: {n_subfile_packages} package(s) sourced from "
+              f"{len(lines_cache) - 1} sub-file(s) (not the root manuscript)")
     print(f"  manifest: {outdir / '_manifest.json'}")
 
 
