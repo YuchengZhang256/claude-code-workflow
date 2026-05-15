@@ -1,6 +1,6 @@
 ---
 name: research-wiki
-description: "Maintain a persistent, Karpathy-style research wiki per domain via three operations: ingest (compile a paper into the wiki), query (answer a question against the wiki), lint (audit pages). ACTIVATE when the user says 'ingest this paper', 'add to wiki', 'query the wiki', 'lint the wiki', 'what does my wiki say about X', or when working inside a directory that already contains a `raw/` + `wiki/` + `CLAUDE.md` layout. Do NOT use for: general literature search (use a paper-lookup skill); one-off paper reading where persistence is not wanted; any directory that does NOT already have the `raw/` + `wiki/` + `CLAUDE.md` layout (bootstrap a new wiki via `scripts/new-wiki.sh` first). Not a RAG system — the wiki is LLM-compiled Markdown, browsable in Obsidian."
+description: "In an existing research wiki, ingest papers, answer wiki queries, or lint compiled Markdown pages."
 allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 ---
 
@@ -50,10 +50,9 @@ Every concept has one page. Every contradiction is flagged.
 All understanding, analysis, and cross-linking happens in `wiki/`. This
 means you can always rebuild the wiki from scratch without losing data.
 
-Each wiki is an independent `git` repo — `git log` is the wiki's growth
-story, and every ingest is a commit.
+Each wiki can be an independent `git` repo. Use commits when the user asks or when the project convention requires it; do not auto-commit silently.
 
-See `examples/research-wiki-starter/` in this repo for a clone-ready skeleton.
+A new wiki is bootstrapped via `scripts/new-wiki.sh` (see "Creating a new wiki" below); the per-wiki schema lives at `templates/per_wiki_CLAUDE.md`.
 
 ## The three operations
 
@@ -63,15 +62,16 @@ See `examples/research-wiki-starter/` in this repo for a clone-ready skeleton.
 
 **Flow**:
 
-1. **Read the source.** For PDFs, use a dedicated PDF extractor
-   (`pdftotext` / `pdfplumber` / an LLM-based extractor) — do not rely on
-   `WebFetch` or inline `Read` on a large scientific PDF.
+1. **Read the source.** For PDFs, use `pdftotext` (preferred) or `ocrmypdf`
+   for scanned ones — do not rely on `WebFetch` or inline `Read` on a large
+   scientific PDF. If both fail, report the blocker.
 2. **Read `wiki/index.md` first** to see what concepts already exist. Every
    subsequent decision depends on this.
-3. **Structured analysis.** Produce, internally: title, authors, year, the
-   paper's task, the challenge, the key insight, the methodology, the main
-   results, limitations. (The `paper-reader` framing is a reasonable default
-   if you have that skill; otherwise do it yourself.)
+3. **Structured analysis via `paper-reader`.** When the source is a research
+   paper, dispatch the `paper-reader` skill (Task / Challenge / Insight /
+   Flaw / Motivation framework) — do not re-implement the framework inline.
+   For non-paper sources (textbook chapter, technical note), produce the same
+   five-axis analysis directly.
 4. **Discuss with the user.** Present the core findings and ask what they
    want emphasized, what connections they see, what contradicts existing
    wiki pages. **Do not skip this step** — the wiki encodes the user's
@@ -90,7 +90,7 @@ See `examples/research-wiki-starter/` in this repo for a clone-ready skeleton.
 9. **Update `wiki/index.md`** to list the new source and any new
    concept/entity pages.
 10. **Append to `wiki/log.md`**: `{date} | ingest | {source} | {N pages touched}`.
-11. **Commit.** `git add -A && git commit -m "ingest: {source title}"`
+11. **Offer a commit.** If the user wants versioned wiki operations, commit with `git add -A && git commit -m "ingest: {source title}"`; otherwise leave the changes uncommitted.
 
 A single ingest typically touches 5–15 pages. The compounding value is the
 point: every new paper not only gets its own page but enriches every
@@ -121,35 +121,48 @@ over-document.
 
 **Trigger**: "lint the wiki", "what's stale", "audit".
 
-**Checks**:
+**Quick lint** (deterministic, ~2 sec across a 100-page wiki):
 
-- **Orphan pages**: pages with no incoming `[[wikilinks]]` from elsewhere
+```bash
+python3 ~/.claude/skills/research-wiki/scripts/lint.py <wiki-dir>
+```
+
+The script runs five mechanical checks and prints a grouped stdout report:
+
+- **Orphan pages**: no incoming `[[wikilinks]]` from elsewhere (excluding
+  `index`, `log`, and pages under `synthesis/`)
 - **Broken wikilinks**: `[[foo]]` where `wiki/**/foo.md` does not exist
-- **Frontmatter drift**: `updated:` older than the newest source that cites
-  the page, or missing fields
-- **Short pages**: stubs under ~150 words that were probably meant to be
-  expanded
-- **Index staleness**: entries in `wiki/index.md` that no longer exist, or
-  files in `wiki/` not listed in the index
-- **Duplicate concepts**: two concept pages that seem to describe the same
-  thing under different names — ask the user before merging
+- **Stub pages**: under ~150 words
+- **Frontmatter drift**: missing required fields (`title`, `type`, `created`,
+  `updated`)
+- **Source-less concepts**: concept pages whose `sources:` frontmatter is
+  empty (signals "pre-seeded scaffolding never grounded in a real source")
 
-Produce a report grouped by category. Do **not** auto-fix orphan/merge
-issues — surface them for the user to decide.
+**Full audit** (LLM-driven, only on request — these need judgment):
+
+- Contradictions across related pages
+- Stale claims superseded by newer sources
+- Missing cross-references between semantically related pages
+- Duplicate concepts under different names
+- Math spot-checks for `inequality` / `proof_technique` entities
+
+Do **not** auto-fix orphan / merge / dedup issues — surface them for the
+user to decide.
 
 ## Creating a new wiki
 
-Use the starter in `examples/research-wiki-starter/`:
-
 ```bash
-cp -r <path-to-this-repo>/examples/research-wiki-starter ~/research/<domain>
-cd ~/research/<domain>
-git init && git add -A && git commit -m "bootstrap <domain> wiki"
+~/.claude/skills/research-wiki/scripts/new-wiki.sh ~/research/<domain> "<domain>"
 ```
 
-Then edit `CLAUDE.md` at the root to add any domain-specific rules
-(preferred notation, citation style, exclusions). That file is read by
-Claude every time you work inside this directory.
+The script assembles the wiki layout entirely from this skill's
+`templates/per_wiki_CLAUDE.md` plus inline minimal seeds for `index.md` /
+`log.md`. It refuses to overwrite an existing target. After bootstrap:
+
+1. Drop source PDFs / notes into `~/research/<domain>/raw/`.
+2. Edit the "Domain-Specific Notes" section of the new `CLAUDE.md` as
+   conventions emerge (preferred notation, citation style, exclusions).
+3. Tell Claude `"ingest raw/<file>"` to compile the first source.
 
 ## Page templates
 
@@ -176,5 +189,4 @@ underscores, no spaces).
   `updated: YYYY-MM-DD`.
 - **Never modify `raw/`.** If the user wants to correct a typo in an
   extracted paper, that lives in `wiki/`, not `raw/`.
-- **Commit after every operation.** One ingest = one commit, one lint pass
-  with fixes = one commit.
+- **Do not auto-commit.** Offer one commit per ingest or lint pass when useful, but only run `git commit` when the user explicitly wants it.

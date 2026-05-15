@@ -1,22 +1,39 @@
 #!/usr/bin/env bash
-# new-wiki.sh — bootstrap a new research wiki from the starter template.
+# new-wiki.sh — bootstrap a new Karpathy-style research wiki.
 #
 # Usage:
 #   new-wiki.sh <target-directory> [<domain-name>]
 #
 # Example:
 #   new-wiki.sh ~/research/causal-inference "causal inference"
+#
+# Builds the wiki layout entirely from this skill's own templates/.  Previous
+# versions tried to copy a `<repo>/examples/research-wiki-starter` directory
+# that doesn't exist when the skill is installed standalone — those failed at
+# step "locate starter".  This version assembles the wiki from templates +
+# minimal inline skeletons, so it works from any install location.
+
 set -euo pipefail
 
 TARGET="${1:-}"
-DOMAIN="${2:-TODO-fill-in-domain}"
+DOMAIN="${2:-research}"
 
 if [ -z "$TARGET" ]; then
   cat >&2 <<EOF
 Usage: $0 <target-directory> [<domain-name>]
 
-Bootstraps a new Karpathy-style research wiki at <target-directory> by
-copying the starter from this repo. The target directory must not exist.
+Bootstraps a new Karpathy-style research wiki at <target-directory>:
+  CLAUDE.md      <- per-wiki schema (from templates/per_wiki_CLAUDE.md)
+  raw/           <- immutable source documents (you fill this)
+  wiki/
+    index.md     <- master catalog (minimal seed)
+    log.md       <- operation log (with bootstrap entry)
+    sources/    concepts/    entities/    comparisons/    synthesis/
+
+The target directory must not already exist.
+
+Example:
+  $0 ~/research/community-detection "community detection"
 EOF
   exit 1
 fi
@@ -26,36 +43,108 @@ if [ -e "$TARGET" ]; then
   exit 2
 fi
 
-# Locate the starter relative to this script.
+# Locate the skill's templates/ relative to this script
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-STARTER="$(cd "$SCRIPT_DIR/../../../examples/research-wiki-starter" 2>/dev/null && pwd)" || {
-  echo "Error: cannot locate examples/research-wiki-starter relative to $SCRIPT_DIR" >&2
-  echo "Expected layout: <repo>/examples/research-wiki-starter and <repo>/skills/research-wiki/scripts/" >&2
+SKILL_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEMPLATE_DIR="$SKILL_DIR/templates"
+PER_WIKI_TPL="$TEMPLATE_DIR/per_wiki_CLAUDE.md"
+
+if [ ! -f "$PER_WIKI_TPL" ]; then
+  echo "Error: per-wiki template not found at $PER_WIKI_TPL" >&2
+  echo "       (skill install at $SKILL_DIR is incomplete)" >&2
   exit 3
-}
+fi
 
-mkdir -p "$TARGET"
-cp -r "$STARTER"/. "$TARGET"/
+# Build directory skeleton
+mkdir -p "$TARGET/raw"
+mkdir -p "$TARGET/wiki/sources"
+mkdir -p "$TARGET/wiki/concepts"
+mkdir -p "$TARGET/wiki/entities"
+mkdir -p "$TARGET/wiki/comparisons"
+mkdir -p "$TARGET/wiki/synthesis"
 
-# Fill in the domain name in CLAUDE.md and wiki/index.md. sed is POSIX so it
-# is always available. Fail loudly if substitution breaks — a half-populated
-# template is worse than a clear error.
-sed -i.bak "s|<DOMAIN>|$DOMAIN|g" "$TARGET/CLAUDE.md" "$TARGET/wiki/index.md"
-rm -f "$TARGET/CLAUDE.md.bak" "$TARGET/wiki/index.md.bak"
+# Per-wiki CLAUDE.md from template (substitute <DOMAIN>)
+sed "s|<DOMAIN>|$DOMAIN|g" "$PER_WIKI_TPL" > "$TARGET/CLAUDE.md"
 
-# Initialize git. Optional — if git is not installed or commit fails, warn
-# but do not fail the bootstrap (the user still has a populated directory).
+# Capitalized human title from domain for index.md
+TITLE="$(echo "$DOMAIN" | awk '{for(i=1;i<=NF;i++)$i=toupper(substr($i,1,1))substr($i,2)}1')"
+TODAY="$(date +%Y-%m-%d)"
+
+# Minimal index.md
+cat > "$TARGET/wiki/index.md" <<INDEX_EOF
+---
+title: "Wiki Index"
+type: synthesis
+created: $TODAY
+updated: $TODAY
+sources: []
+related: []
+tags: [meta, index]
+---
+
+# $TITLE Wiki — Index
+
+> Master catalog of all wiki pages. Updated on every ingest.
+> Read this first to find relevant pages before answering queries.
+
+## Sources
+
+_(empty — drop a paper into raw/ and ask Claude to ingest it)_
+
+## Concepts
+
+_(empty)_
+
+## Entities
+
+_(empty)_
+
+## Comparisons
+
+_(empty)_
+
+## Synthesis
+
+_(empty)_
+INDEX_EOF
+
+# Minimal log.md with bootstrap entry
+cat > "$TARGET/wiki/log.md" <<LOG_EOF
+# Operation Log
+
+Append-only chronological log of wiki operations (ingest, query-filing, lint, structural changes).
+
+## [$TODAY] bootstrap | $DOMAIN wiki created
+
+Initialized empty wiki layout via \`new-wiki.sh\`:
+- CLAUDE.md (from per-wiki template)
+- raw/, wiki/{sources,concepts,entities,comparisons,synthesis}/
+- wiki/index.md, wiki/log.md (this file)
+
+Next steps:
+1. Drop source PDFs / notes into \`raw/\`.
+2. Tell Claude: "ingest raw/<file>" to compile it into the wiki.
+3. Edit the "Domain-Specific Notes" section of CLAUDE.md as conventions emerge.
+
+LOG_EOF
+
+# Initialize git (best-effort, not fatal). Use existing repo identity if any.
 if command -v git >/dev/null 2>&1; then
-  if ! ( cd "$TARGET" && git init -q && git add -A && git commit -q -m "bootstrap $DOMAIN wiki" ); then
-    echo "warning: git init/commit failed. Your wiki is populated but not versioned." >&2
-    echo "         Investigate with: cd $TARGET && git status" >&2
-  fi
-else
-  echo "warning: git not found — wiki populated but not versioned." >&2
+  (
+    cd "$TARGET"
+    git init -q
+    git add -A
+    git -c user.email="${GIT_AUTHOR_EMAIL:-$(git config --get user.email 2>/dev/null || echo nobody@local)}" \
+        -c user.name="${GIT_AUTHOR_NAME:-$(git config --get user.name 2>/dev/null || echo nobody)}" \
+        commit -q -m "bootstrap $DOMAIN wiki" || true
+  )
 fi
 
 echo "Wiki bootstrapped at: $TARGET"
-echo "Next steps:"
-echo "  1. cd $TARGET"
-echo "  2. Drop a paper into raw/"
-echo "  3. Tell Claude: 'ingest raw/<paper>.pdf'"
+echo ""
+echo "Layout:"
+echo "  $TARGET/CLAUDE.md      <- per-wiki schema (edit Domain-Specific Notes as needed)"
+echo "  $TARGET/raw/           <- drop sources here (immutable)"
+echo "  $TARGET/wiki/          <- Claude will maintain pages here"
+echo ""
+echo "Next: cd $TARGET && drop a PDF into raw/ && tell Claude 'ingest raw/<file>'"
