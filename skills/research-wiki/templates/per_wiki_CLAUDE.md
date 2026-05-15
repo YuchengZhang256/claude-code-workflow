@@ -52,6 +52,31 @@ Filenames: lowercase, underscores, no spaces.
 - `wiki/comparisons/{snake}.md` — What's Compared, Comparison Table, Trade-off, When to Use.
 - `wiki/synthesis/{snake}.md` — Thesis, Evidence, Open Questions, Future Directions.
 
+### Concept vs entity — quick rule
+
+Ask: **"does this thing have ONE canonical statement / definition / procedure?"**
+
+- **YES → entity** (then pick `subtype`: `inequality` / `algorithm` / `math_object` / `proof_technique`).
+- **NO → concept** (it's a topic / phenomenon / problem class / property with multiple definitions, treatments, or perspectives).
+
+Examples:
+
+| Page | Decision | Why |
+|---|---|---|
+| `modularity` | concept | many definitions exist (Newman-Girvan, generalized, signed, …) |
+| `davis_kahan_theorem` | entity:inequality | one named inequality with one statement |
+| `belief_propagation` | entity:algorithm | one specific message-passing algorithm |
+| `spectral_clustering` | concept | a FAMILY of algorithms over different matrices |
+| `exact_recovery_threshold` | concept | a phenomenon studied across model classes |
+| `polar_decomposition` | entity:math_object | one definition of `A = QH` |
+| `effective_rank` | concept | several non-equivalent definitions |
+| `two_to_infinity_norm` | entity:math_object | one definition `max_i ‖A_i,:‖₂` |
+| `unitarily_invariant_norm` | concept | a CLASS of norms (Frobenius, operator, Schatten-p, …) |
+| `matrix_calculus_foundations` | concept | a toolkit of identities, not one technique |
+| `leave_one_out_decoupling` | entity:proof_technique | one canonical recipe |
+
+When borderline, default to **concept** (lower commitment; you can always promote later).
+
 ## Operating Modes
 
 ### Ingest
