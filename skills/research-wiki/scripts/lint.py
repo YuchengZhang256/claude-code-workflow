@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-research-wiki lint — five mechanical checks on a Karpathy-style wiki dir.
+research-wiki lint — six mechanical checks on a Karpathy-style wiki dir.
 
 Usage:
     lint.py <wiki-dir>          # e.g. ~/research/network-science/wiki
@@ -14,6 +14,7 @@ Checks (each runs in <1s on a 100-page wiki):
   4. frontmatter   page missing one of: title, type, created, updated
   5. sourceless    page under concepts/ with empty `sources:` frontmatter
                    (pre-seeded scaffolding signal)
+  6. untagged      page has empty or missing `tags:` (escapes tag-based search)
 
 Output: plain stdout, grouped by category. No markdown decoration, no
 auto-fix. Exit code 0 always (lint is informational; the LLM / user
@@ -151,6 +152,22 @@ def find_sourceless_concepts(pages):
     return sorted(out)
 
 
+def find_untagged(pages):
+    """Pages with empty `tags:` — escapes tag-based search.
+
+    Excludes index/log (meta pages), since their tags are mostly cosmetic.
+    """
+    out = []
+    for name, (path, _, fm, _) in pages.items():
+        if name in EXCLUDE_FROM_ORPHAN:
+            continue
+        tags = fm.get("tags") or []
+        if not tags:
+            kind = fm.get("type", "?")
+            out.append((name, kind))
+    return sorted(out)
+
+
 def report(wiki_dir, results):
     """Print a grouped stdout report."""
     issue_keys = [k for k in results if not k.startswith("_")]
@@ -189,6 +206,12 @@ def report(wiki_dir, results):
             print(f"  - {name}")
         print()
 
+    if results["untagged"]:
+        print(f"# untagged ({len(results['untagged'])})  — page has no tags (escapes tag-based search)")
+        for name, kind in results["untagged"]:
+            print(f"  - {kind:12s} {name}")
+        print()
+
     if n == 0:
         print("(clean)")
 
@@ -210,6 +233,7 @@ def main():
         "stubs":        find_stubs(pages),
         "frontmatter":  find_frontmatter_drift(pages),
         "sourceless":   find_sourceless_concepts(pages),
+        "untagged":     find_untagged(pages),
     }
     report(wiki_dir, results)
 

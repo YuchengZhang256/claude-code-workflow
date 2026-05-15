@@ -127,7 +127,7 @@ over-document.
 python3 ~/.claude/skills/research-wiki/scripts/lint.py <wiki-dir>
 ```
 
-The script runs five mechanical checks and prints a grouped stdout report:
+The script runs six mechanical checks and prints a grouped stdout report:
 
 - **Orphan pages**: no incoming `[[wikilinks]]` from elsewhere (excluding
   `index`, `log`, and pages under `synthesis/`)
@@ -137,6 +137,8 @@ The script runs five mechanical checks and prints a grouped stdout report:
   `updated`)
 - **Source-less concepts**: concept pages whose `sources:` frontmatter is
   empty (signals "pre-seeded scaffolding never grounded in a real source")
+- **Untagged pages**: pages with empty or missing `tags:` (escapes
+  tag-based search; common with bulk-ingested early pages)
 
 **Full audit** (LLM-driven, only on request — these need judgment):
 
@@ -148,6 +150,21 @@ The script runs five mechanical checks and prints a grouped stdout report:
 
 Do **not** auto-fix orphan / merge / dedup issues — surface them for the
 user to decide.
+
+**Tag canonicalization** (read-only analysis, run when singleton tag count
+gets high):
+
+```bash
+python3 ~/.claude/skills/research-wiki/scripts/tag_canon.py <wiki-dir> > tag_canon_report.md
+```
+
+Produces a markdown report grouping rare tags (used ≤3 times) by their
+likely canonical merge target from the top-tag pool (used ≥5 times).
+Matching is purely syntactic (substring + token-overlap, no semantic
+similarity) so false positives are easy to spot in review. The script
+NEVER modifies pages — apply selected merges by hand or via Claude with
+explicit instructions. Recommended trigger: when `len(unique_tags) > 3 ×
+len(pages)` or singleton ratio exceeds ~50%.
 
 ## Creating a new wiki
 
